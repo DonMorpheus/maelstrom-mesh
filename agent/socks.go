@@ -99,3 +99,36 @@ func handleSOCKS(c net.Conn) {
 	go func() { _, _ = io.Copy(c, up); errc <- struct{}{} }()
 	<-errc
 }
+
+// Local Connect window: host browser → overlay hub rosterd.
+// Overlay :1080 stays an exit (CONNECT via the host stack). This listener
+// is the opposite direction — local operator → 10.66.0.1:7668.
+func serveConnect(tnet *netstack.Net, local, remote string) error {
+	ln, err := net.Listen("tcp", local)
+	if err != nil {
+		return err
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go proxyConnect(tnet, c, remote)
+		}
+	}()
+	return nil
+}
+
+func proxyConnect(tnet *netstack.Net, c net.Conn, remote string) {
+	defer c.Close()
+	up, err := tnet.Dial("tcp", remote)
+	if err != nil {
+		return
+	}
+	defer up.Close()
+	errc := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(up, c); errc <- struct{}{} }()
+	go func() { _, _ = io.Copy(c, up); errc <- struct{}{} }()
+	<-errc
+}

@@ -66,9 +66,12 @@ def _hub_hosts(ssh_host: str) -> dict | None:
     if p.returncode != 0 or not p.stdout.strip():
         return None
     try:
-        return json.loads(p.stdout)
+        doc = json.loads(p.stdout)
     except json.JSONDecodeError:
         return None
+    if not isinstance(doc, dict) or "hub" not in doc:
+        return None
+    return doc
 
 
 def _apply_live(view: dict, hub_doc: dict | None) -> dict:
@@ -277,6 +280,19 @@ def cmd_gui(args: argparse.Namespace) -> None:
             self.end_headers()
             self.wfile.write(data)
 
+        def _ops(self) -> Path:
+            return m.out / "operators.json"
+
+        def _need_auth(self) -> bool:
+            return self._ops().is_file()
+
+        def _auth(self):
+            from lib.auth import session
+
+            h = self.headers.get("Authorization") or ""
+            token = h[7:].strip() if h.lower().startswith("bearer ") else ""
+            return session(token)
+
         def do_GET(self) -> None:  # noqa: N802
             u = urlparse(self.path)
             if u.path in ("/", "/index.html"):
@@ -293,7 +309,21 @@ def cmd_gui(args: argparse.Namespace) -> None:
                 if logo.is_file():
                     self._file(logo, "image/jpeg")
                     return
+            if u.path == "/api/me":
+                me = self._auth()
+                if self._need_auth() and not me:
+                    self._json(401, {"error": "login"})
+                    return
+                if not me:
+                    self._json(200, {"name": "local", "role": "admin"})
+                    return
+                self._json(200, {"name": me["name"], "role": me["role"]})
+                return
             if u.path == "/api/state":
+                me = self._auth()
+                if self._need_auth() and not me:
+                    self._json(401, {"error": "login"})
+                    return
                 mm = self._mesh()
                 view = mm.public_view()
                 live = _handshake_map()
@@ -302,6 +332,17 @@ def cmd_gui(args: argparse.Namespace) -> None:
                         p["handshake"] = live[p["public"]]
                 view = _apply_live(view, _hub_hosts(hub_ssh))
                 view["steer"] = _load_steer(m.out)
+                role = (me or {}).get("role") or "admin"
+                if role != "admin":
+                    view.get("hub", {}).pop("wan", None)
+                    view.get("hub", {}).pop("public", None)
+                    for p in view.get("peers") or []:
+                        p.pop("wan", None)
+                        p.pop("public", None)
+                view["me"] = {
+                    "name": (me or {}).get("name") or "local",
+                    "role": role,
+                }
                 self._json(200, view)
                 return
             if u.path.startswith("/api/connect/"):
@@ -335,8 +376,24 @@ def cmd_gui(args: argparse.Namespace) -> None:
             except json.JSONDecodeError:
                 self._json(400, {"error": "json"})
                 return
+            if u.path == "/api/login":
+                from lib.auth import login as do_login
+
+                got = do_login(self._ops(), str(obj.get("user") or ""), str(obj.get("password") or ""))
+                if not got:
+                    self._json(401, {"error": "bad login"})
+                    return
+                self._json(200, got)
+                return
+            me = self._auth()
+            if self._need_auth() and not me:
+                self._json(401, {"error": "login"})
+                return
             mm = self._mesh()
             if u.path == "/api/peer":
+                if (me or {}).get("role") not in (None, "admin") and self._need_auth():
+                    self._json(403, {"error": "admin only"})
+                    return
                 try:
                     peer = mm.add_peer(str(obj.get("name", "")), str(obj.get("os", "linux")))
                 except ValueError as e:
@@ -346,6 +403,9 @@ def cmd_gui(args: argparse.Namespace) -> None:
                 self._json(200, {"ok": True, "name": peer["name"], "address": peer["address"]})
                 return
             if u.path == "/api/revoke":
+                if (me or {}).get("role") not in (None, "admin") and self._need_auth():
+                    self._json(403, {"error": "admin only"})
+                    return
                 try:
                     p = mm.revoke(str(obj.get("name", "")))
                 except KeyError:
@@ -376,6 +436,26 @@ def cmd_gui(args: argparse.Namespace) -> None:
 def cmd_selftest(args: argparse.Namespace) -> None:
     selftest()
     _ok("x25519 clamp + pubkey ok")
+
+
+def cmd_user(args: argparse.Namespace) -> None:
+    from lib.auth import load_users, upsert_user
+
+    out = Path(args.out).resolve()
+    path = out / "operators.json"
+    if args.action == "list":
+        for u in load_users(path):
+            print(f"{u.get('name'):16} {u.get('role')}")
+        return
+    if not args.name:
+        _die("user add needs --name --role admin|operator")
+    pw = args.password or ""
+    if not pw:
+        import getpass
+
+        pw = getpass.getpass("password: ")
+    upsert_user(path, args.name, pw, args.role)
+    _ok(f"{args.role} {args.name}  {path}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -419,6 +499,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("selftest", help="key math vs wg(8) if present")
     s.set_defaults(fn=cmd_selftest)
+
+    s = sub.add_parser("user", help="hub operator account (admin|operator)")
+    s.add_argument("action", choices=("add", "list"), default="add", nargs="?")
+    s.add_argument("--out", default="./riptide-out")
+    s.add_argument("--name")
+    s.add_argument("--role", choices=("admin", "operator"), default="operator")
+    s.add_argument("--password", default="")
+    s.set_defaults(fn=cmd_user)
 
     return p
 

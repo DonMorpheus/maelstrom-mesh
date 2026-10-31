@@ -34,7 +34,7 @@ Stock WireGuard on the wire so a phone app and `wg-quick` still load the same co
 ## Layout
 
 ```
-mesh.py                 init / peer / revoke / status / pack / gui
+mesh.py                 init / peer / revoke / status / pack / gui / user
 lib/keys.py             X25519 + PSK
 lib/state.py            sealed mesh.json
 lib/crypto.py           at-rest box
@@ -55,7 +55,9 @@ python3 mesh.py peer --out ./riptide-out --name windows --os windows
 python3 mesh.py peer --out ./riptide-out --name kali --os linux
 python3 mesh.py peer --out ./riptide-out --name phone --os android
 python3 mesh.py status --out ./riptide-out
-python3 mesh.py gui --out ./riptide-out          # http://127.0.0.1:7667
+python3 mesh.py gui --out ./riptide-out          # enroll UI 127.0.0.1:7667
+python3 mesh.py user add --out ./riptide-out --name DonMorpheus --role admin
+python3 mesh.py user add --out ./riptide-out --name operator --role operator
 ```
 
 `riptide-out/mesh.key` and `riptide-out/mesh.json` never go in git. Backup the key separately.
@@ -108,14 +110,21 @@ python3 mesh.py peer --out ./riptide-out --name kali --os linux
 
 `--remote` accepts a `~/.ssh/config` Host (`rt-vps`, …). Script: install `wireguard`, `/etc/wireguard/wg0.conf` mode 600, `ip_forward`, `ufw allow 51820/udp` when ufw is already active, `wg-quick@wg0`. It does not reset UFW, does not lock SSH to `wg0`, does not touch nginx or the C2 listener.
 
-Hub publishes the live host list on **loopback + overlay only** (`127.0.0.1:7668` and `10.66.0.1:7668`), never on WAN:
+Hub publishes the live host list on **loopback + overlay only** (`127.0.0.1:7668` and `10.66.0.1:7668`), never on WAN. Login is required (`operators.json`, scrypt). **admin** sees WAN IPs and pubkey. **operator** sees overlay + flag + SOCKS, not WAN.
 
 ```bash
+python3 mesh.py user add --out ./riptide-out --name DonMorpheus --role admin
 ./deploy/roster.sh --remote root@YOUR.VPS.IP --out ./riptide-out --yes
-python3 mesh.py gui --out ./riptide-out --hub-ssh rt-vps
+./deploy/install-gui-linux.sh          # ~/.local/bin/riptide-gui
+riptide-gui                            # admin: SSH tunnel, or agent already up
+riptide-gui --overlay                  # low-priv Linux: agent splices 127.0.0.1:7668
 ```
 
-GUI: **entry** (hub you join on UDP 51820) next to **exit** (peer whose SOCKS you send traffic through). Country flags come from the peer WAN IP the hub sees in `wg show`. Click an exit → `ALL_PROXY=socks5h://10.66.0.X:1080`.
+Windows (agent already running): `deploy/windows-connect.ps1` → Edge `http://127.0.0.1:7668/`.
+
+Userspace netstack does not put `10.66` on the host stack. The agent therefore listens `127.0.0.1:7668` and splices TCP onto `10.66.0.1:7668`. That is Connect. Havoc WSS `:443` stays a separate product.
+
+GUI: **entry** (hub you join on UDP 51820) next to **exit** (peer whose SOCKS you send traffic through). Country flags come from the peer WAN IP the hub sees in `wg show`. Click an exit → `ALL_PROXY=socks5h://10.66.0.X:1080`. Enroll (`mesh.py peer`) stays on the admin workstation that holds `mesh.key`.
 
 On-box fallback (already root on the hub): `CONFIRM=YES templates/install-hub.sh /etc/wireguard/wg0.conf`.
 

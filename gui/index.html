@@ -7,7 +7,23 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <div class="shell">
+  <div id="connect-screen" class="shell">
+    <header>
+      <img src="/logo.jpg" alt="Riptide" class="logo">
+      <div>
+        <p class="kicker">central hub</p>
+        <h1>CONNECT</h1>
+        <p class="sub">admin sees all hosts · operator picks entry/exit</p>
+      </div>
+    </header>
+    <form id="login" class="login">
+      <label>user <input name="user" autocomplete="username" required></label>
+      <label>password <input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Connect</button>
+      <p class="hint" id="login-err"></p>
+    </form>
+  </div>
+  <div class="shell" id="app" hidden>
     <header>
       <img src="/logo.jpg" alt="Riptide" class="logo">
       <div>
@@ -32,8 +48,10 @@
       </div>
     </section>
 
-    <section class="toolbar">
+    <p class="who" id="who"></p>
+    <section class="toolbar" id="enroll-box" hidden>
       <h2>enroll</h2>
+      <p class="hint">admin only — keys stay on the admin workstation (`mesh.py peer`)</p>
       <form id="new-peer">
         <input name="name" placeholder="name" required autocomplete="off">
         <select name="os">

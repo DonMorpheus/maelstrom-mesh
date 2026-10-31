@@ -104,6 +104,17 @@ button.danger { background: transparent; color: #e07a6a; border: 1px solid #e07a
 .exit { margin-top: 40px; border-top: 1px dashed var(--line); padding-top: 16px; }
 .exit.disabled { opacity: 0.45; }
 .exit.disabled p { text-decoration: line-through; }
+.login {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 360px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  padding: 20px;
+}
+.login label { display: flex; flex-direction: column; gap: 6px; color: var(--mute); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; }
+.who { color: var(--mute); margin: 0 0 16px; }
 .toast {
   position: fixed; bottom: 16px; right: 16px;
   background: var(--mint); color: var(--ink);

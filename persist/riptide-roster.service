@@ -5,7 +5,7 @@ Wants=wg-quick@wg0.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /usr/local/lib/riptide/rosterd.py --roster /etc/riptide/roster.json --cache /var/cache/riptide --port 7668
+ExecStart=/usr/bin/python3 /usr/local/lib/riptide/rosterd.py --roster /etc/riptide/roster.json --operators /etc/riptide/operators.json --gui /usr/local/share/riptide/gui --assets /usr/local/share/riptide/assets --cache /var/cache/riptide --port 7668
 Restart=always
 RestartSec=3
 User=root

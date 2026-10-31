@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Admin / operator Connect on Linux: SSH tunnel to hub GUI, then browser.
+#   riptide-gui                 # Host rt-vps
+#   riptide-gui --remote HOST
+# Overlay peers can skip the tunnel: riptide-gui --overlay
+set -euo pipefail
+REMOTE="rt-vps"
+OVERLAY=0
+PORT=7668
+URL=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --remote|-r) REMOTE="$2"; shift 2 ;;
+    --overlay) OVERLAY=1; shift ;;
+    --port) PORT="$2"; shift 2 ;;
+    *) echo "usage: riptide-gui [--remote HOST] [--overlay]" >&2; exit 2 ;;
+  esac
+done
+
+# Agent peers already splice 127.0.0.1:7668 → hub overlay.
+# Admin workstation without a live agent uses SSH -L.
+if [[ "$OVERLAY" == 1 ]]; then
+  URL="http://127.0.0.1:${PORT}/"
+else
+  if curl -sf -o /dev/null --max-time 1 "http://127.0.0.1:${PORT}/" 2>/dev/null; then
+    URL="http://127.0.0.1:${PORT}/"
+  else
+    ssh -fN -o ControlMaster=no -o BatchMode=yes -o ExitOnForwardFailure=yes \
+      -L "127.0.0.1:${PORT}:127.0.0.1:${PORT}" "$REMOTE"
+    URL="http://127.0.0.1:${PORT}/"
+  fi
+fi
+
+echo "[+] Connect  $URL"
+if command -v xdg-open >/dev/null; then
+  xdg-open "$URL" >/dev/null 2>&1 || true
+fi
+echo "[+] login as admin (full roster) or operator (entry/exit only)"

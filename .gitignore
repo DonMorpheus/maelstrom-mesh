@@ -3,6 +3,8 @@ riptide-out/
 out/
 *.key
 mesh.json
+operators.json
+steer.json
 mesh.json.enc
 __pycache__/
 *.pyc

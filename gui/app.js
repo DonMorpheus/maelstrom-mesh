@@ -1,5 +1,6 @@
 const $ = (s, r = document) => r.querySelector(s);
 let STATE = null;
+let TOKEN = localStorage.getItem("riptide-token") || "";
 
 function toast(msg) {
   const t = document.createElement("div");
@@ -10,7 +11,16 @@ function toast(msg) {
 }
 
 async function api(path, opt) {
+  opt = opt || {};
+  opt.headers = Object.assign({}, opt.headers || {});
+  if (TOKEN) opt.headers.Authorization = "Bearer " + TOKEN;
   const r = await fetch(path, opt);
+  if (r.status === 401) {
+    TOKEN = "";
+    localStorage.removeItem("riptide-token");
+    showConnect();
+    throw new Error("login");
+  }
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
@@ -35,22 +45,43 @@ function overlay(h) {
   return (h.overlay || h.address || "").split("/")[0];
 }
 
+function steerGet() {
+  try {
+    return JSON.parse(localStorage.getItem("riptide-steer") || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function steerSet(kind, name) {
+  const s = steerGet();
+  s[kind] = name;
+  localStorage.setItem("riptide-steer", JSON.stringify(s));
+}
+
+function isAdmin() {
+  return (STATE && STATE.me && STATE.me.role) === "admin";
+}
+
 function card(h, kind, selected) {
   const el = document.createElement("article");
   const on = live(h);
   el.className = "card" + (on ? " live" : "") + (selected ? " selected" : "");
-  const cc = h.country || "";
   const fl = h.flag || "🏳️";
+  const wan = isAdmin() ? (h.wan || "") : "";
   el.innerHTML = `
     <div class="flag">${fl}</div>
-    <div class="cc">${cc || "??"} ${h.country_name || ""}</div>
+    <div class="cc">${h.country || "??"} ${h.country_name || ""}</div>
     <div class="name">${h.name}</div>
     <div class="ip">${overlay(h)}</div>
     <div class="badge">${kind} · ${h.os || ""} · ${on ? "up" : "down"}</div>
-    <div class="badge">${h.wan || "wan unknown"}</div>
+    ${wan ? `<div class="badge">${wan}</div>` : ""}
     <div class="row"></div>
   `;
-  el.onclick = () => pick(kind, h.name);
+  el.onclick = () => {
+    steerSet(kind, h.name);
+    render(STATE);
+  };
   const row = $(".row", el);
   if (kind === "exit") {
     const ip = overlay(h);
@@ -73,21 +104,14 @@ function card(h, kind, selected) {
   return el;
 }
 
-async function pick(kind, name) {
-  const body = kind === "entry" ? { entry: name } : { exit: name };
-  await api("/api/steer", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  await load();
-}
-
 function render(state) {
   STATE = state;
-  const st = state.steer || {};
+  const st = steerGet();
+  const me = state.me || {};
+  $("#who").textContent = `${me.name || "?"} · ${me.role || "operator"}`;
+  $("#enroll-box").hidden = me.role !== "admin";
   $("#mesh-meta").textContent =
-    `${state.name} · ${state.network} · ${state.source || "local"} · ${state.crypto?.aead || ""}`;
+    `${state.name} · ${state.network} · ${me.role || ""}`;
   const hub = Object.assign({ isHub: true, name: "hub" }, state.hub || {});
   const entries = [hub];
   const exits = (state.peers || []).filter((p) => p.exit !== false);
@@ -99,7 +123,13 @@ function render(state) {
   $("#steer").innerHTML = `
     <div class="path">${ent.flag || "🏳️"} ${ent.name}  →  ${ex ? (ex.flag || "🏳️") + " " + ex.name : "no exit"}</div>
     <code>${exIp ? "ALL_PROXY=socks5h://" + exIp + ":1080" : ""}</code>
+    <button type="button" class="ghost" id="logout">disconnect</button>
   `;
+  $("#logout").onclick = () => {
+    TOKEN = "";
+    localStorage.removeItem("riptide-token");
+    showConnect();
+  };
   const elE = $("#entry-list");
   elE.innerHTML = "";
   for (const h of entries) elE.appendChild(card(h, "entry", h.name === entryName));
@@ -108,22 +138,51 @@ function render(state) {
   for (const h of exits) elX.appendChild(card(h, "exit", h.name === exitName));
 }
 
+function showConnect() {
+  $("#connect-screen").hidden = false;
+  $("#app").hidden = true;
+}
+
+function showApp() {
+  $("#connect-screen").hidden = true;
+  $("#app").hidden = false;
+}
+
 async function load() {
   const state = await api("/api/state");
+  showApp();
   render(state);
 }
 
-$("#new-peer").addEventListener("submit", async (e) => {
+$("#login").addEventListener("submit", async (e) => {
   e.preventDefault();
+  $("#login-err").textContent = "";
   const fd = new FormData(e.target);
-  await api("/api/peer", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: fd.get("name"), os: fd.get("os") }),
-  });
-  e.target.reset();
-  await load();
+  try {
+    const got = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user: fd.get("user"), password: fd.get("password") }),
+    }).then((r) => r.json());
+    if (!got.token) throw new Error(got.error || "login");
+    TOKEN = got.token;
+    localStorage.setItem("riptide-token", TOKEN);
+    await load();
+  } catch (err) {
+    $("#login-err").textContent = "bad login";
+  }
 });
 
-load();
-setInterval(load, 10000);
+$("#new-peer").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  toast("enroll on admin Kali: python3 mesh.py peer --out …");
+});
+
+if (TOKEN) {
+  load().catch(() => showConnect());
+} else {
+  showConnect();
+}
+setInterval(() => {
+  if (TOKEN && !$("#app").hidden) load().catch(() => {});
+}, 10000);

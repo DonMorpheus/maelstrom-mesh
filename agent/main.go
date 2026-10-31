@@ -60,6 +60,14 @@ func runAgent(cfgPath string) {
 	}
 	log.Printf("%s overlay=%s socks=:1080 (userspace, no WinTUN)", role, c.Iface.Address)
 
+	if !c.isHub() {
+		if err := serveConnect(tnet, "127.0.0.1:7668", "10.66.0.1:7668"); err != nil {
+			log.Printf("connect gui 127.0.0.1:7668: %v (use SSH -L if you are the admin box)", err)
+		} else {
+			log.Printf("connect http://127.0.0.1:7668/ -> 10.66.0.1:7668")
+		}
+	}
+
 	go func() {
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
