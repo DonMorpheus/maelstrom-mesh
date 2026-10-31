@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -63,17 +64,28 @@ func b64ToHex(s string) (string, error) {
 	return hex.EncodeToString(raw), nil
 }
 
+func tryLoadConf(path string) (*cfg, error) {
+	p := strings.TrimSpace(path)
+	if strings.HasPrefix(strings.ToLower(p), "reg:") {
+		return loadConfReg(strings.TrimSpace(p[4:]))
+	}
+	return loadConf(p)
+}
+
 func loadConf(path string) (*cfg, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	return parseConf(f)
+}
 
+func parseConf(r io.Reader) (*cfg, error) {
 	c := &cfg{Riptide: extras{HubEps: map[string]string{}}}
 	section := ""
 	var cur *peer
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {

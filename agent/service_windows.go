@@ -34,11 +34,14 @@ func (s *riptideSvc) Execute(_ []string, r <-chan svc.ChangeRequest, changes cha
 	}
 }
 
-func maybeService(cfg string) bool {
+func maybeService(cfg, name string) bool {
 	ok, err := svc.IsWindowsService()
 	if err != nil || !ok {
 		return false
 	}
-	_ = svc.Run("RiptideAgent", &riptideSvc{cfg: cfg})
+	if name == "" {
+		name = "IntelPma"
+	}
+	_ = svc.Run(name, &riptideSvc{cfg: cfg})
 	return true
 }

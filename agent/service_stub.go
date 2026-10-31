@@ -2,4 +2,4 @@
 
 package main
 
-func maybeService(_ string) bool { return false }
+func maybeService(_, _ string) bool { return false }
