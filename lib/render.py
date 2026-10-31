@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from lib.roster import as_json, public_roster
+
 KEEPALIVE = 25
 
 
@@ -130,6 +132,7 @@ def write_tree(out: Path, data: dict[str, Any]) -> list[Path]:
 
     dump(hub_dir / "wg0.conf", hub_conf(data))
     dump(out / "hub-wg0.conf", hub_conf(data))
+    dump(hub_dir / "roster.json", as_json(public_roster(data)), 0o644)
     dump(hub_dir / "install-hub.sh", install_hub_sh(), 0o700)
     dump(hub_dir / "ufw-mesh.sh", ufw_mesh(int(data["listen_port"])), 0o700)
     dump(out / "riptide-agent.service", systemd_unit(), 0o644)

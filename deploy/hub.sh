@@ -15,6 +15,7 @@ PORT=51820
 YES=0
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=20)
 SCP=(scp -o BatchMode=yes -o ConnectTimeout=20)
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 usage() {
   cat <<'EOF'
@@ -97,4 +98,9 @@ ss -ulnp | grep -E ":${PORT}\\b" || true
 REMOTE
 
 echo "[+] hub up on $REMOTE  udp/$PORT"
+if [[ -f "$OUT/hub/roster.json" ]]; then
+  echo "[*] roster daemon"
+  "$ROOT/deploy/roster.sh" --remote "$REMOTE" --out "$OUT" --yes
+fi
 echo "[+] peer from Kali: ./agent/riptide-agent --config $OUT/peers/<name>.conf"
+echo "[+] GUI: python3 mesh.py gui --out $OUT --hub-ssh $REMOTE"

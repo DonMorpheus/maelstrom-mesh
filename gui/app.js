@@ -1,4 +1,5 @@
 const $ = (s, r = document) => r.querySelector(s);
+let STATE = null;
 
 function toast(msg) {
   const t = document.createElement("div");
@@ -19,79 +20,92 @@ function copy(text) {
   navigator.clipboard.writeText(text).then(() => toast("copied"));
 }
 
-function live(hs) {
+function live(h) {
+  if (h.live === true) return true;
+  if (h.isHub) return true;
+  const hs = h.handshake;
   if (!hs || hs === "unknown" || hs === "never") return false;
   const n = Number(hs);
   if (!Number.isFinite(n) || n <= 0) return false;
-  const now = Math.floor(Date.now() / 1000);
-  if (n > 1e9) return now - n < 180;
+  if (n > 1e9) return Math.floor(Date.now() / 1000) - n < 180;
   return true;
 }
 
-function render(state) {
-  $("#mesh-meta").textContent =
-    `${state.name} · ${state.network} · ${state.crypto.tunnel} · ${state.crypto.aead}`;
-  $("#entry").innerHTML = `
-    <div><span class="badge">entry</span></div>
-    <div>endpoint <code>${state.endpoint}</code></div>
-    <div>hub pub <code>${state.hub.public}</code></div>
+function overlay(h) {
+  return (h.overlay || h.address || "").split("/")[0];
+}
+
+function card(h, kind, selected) {
+  const el = document.createElement("article");
+  const on = live(h);
+  el.className = "card" + (on ? " live" : "") + (selected ? " selected" : "");
+  const cc = h.country || "";
+  const fl = h.flag || "🏳️";
+  el.innerHTML = `
+    <div class="flag">${fl}</div>
+    <div class="cc">${cc || "??"} ${h.country_name || ""}</div>
+    <div class="name">${h.name}</div>
+    <div class="ip">${overlay(h)}</div>
+    <div class="badge">${kind} · ${h.os || ""} · ${on ? "up" : "down"}</div>
+    <div class="badge">${h.wan || "wan unknown"}</div>
+    <div class="row"></div>
   `;
-  const nodes = $("#nodes");
-  nodes.innerHTML = "";
-  const all = [
-    {
-      name: state.hub.name,
-      os: state.hub.os,
-      address: state.hub.address,
-      public: state.hub.public,
-      mode: "hub",
-      handshake: "hub",
-      isHub: true,
-    },
-    ...state.peers,
-  ];
-  for (const p of all) {
-    const ip = p.address.split("/")[0];
-    const on = p.isHub || live(p.handshake);
-    const el = document.createElement("article");
-    el.className = "card" + (on ? " live" : "");
-    el.innerHTML = `
-      <div class="badge ${p.mode || ""}">${p.mode || "peer"} · ${p.os}</div>
-      <div class="name">${p.name}</div>
-      <div class="ip">${ip}</div>
-      <div class="badge">hs ${p.handshake || "unknown"}</div>
-      <div class="row"></div>
-    `;
-    const row = $(".row", el);
-    if (!p.isHub) {
-      const b1 = document.createElement("button");
-      b1.className = "ghost";
-      b1.textContent = "ssh";
-      b1.onclick = () => copy(`ssh user@${ip}`);
-      const b2 = document.createElement("button");
-      b2.className = "ghost";
-      b2.textContent = "rdp";
-      b2.onclick = () => copy(`mstsc /v:${ip}`);
-      const b3 = document.createElement("button");
-      b3.className = "ghost";
-      b3.textContent = "socks";
-      b3.onclick = () => copy(`curl --socks5 ${ip}:1080 https://ifconfig.me`);
-      const b4 = document.createElement("button");
-      b4.className = "danger";
-      b4.textContent = "revoke";
-      b4.onclick = async () => {
-        if (!confirm("revoke " + p.name + "?")) return;
-        await api("/api/revoke", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: p.name }),
-        });
-        await load();
-      };
-      row.append(b1, b2, b3, b4);
-    }
-    nodes.appendChild(el);
+  el.onclick = () => pick(kind, h.name);
+  const row = $(".row", el);
+  if (kind === "exit") {
+    const ip = overlay(h);
+    const b = document.createElement("button");
+    b.className = "ghost";
+    b.textContent = "socks";
+    b.onclick = (e) => {
+      e.stopPropagation();
+      copy(`curl --socks5h ${ip}:1080 https://ifconfig.me`);
+    };
+    const b2 = document.createElement("button");
+    b2.className = "ghost";
+    b2.textContent = "proxy env";
+    b2.onclick = (e) => {
+      e.stopPropagation();
+      copy(`export ALL_PROXY=socks5h://${ip}:1080 HTTPS_PROXY=socks5h://${ip}:1080`);
+    };
+    row.append(b, b2);
   }
+  return el;
+}
+
+async function pick(kind, name) {
+  const body = kind === "entry" ? { entry: name } : { exit: name };
+  await api("/api/steer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  await load();
+}
+
+function render(state) {
+  STATE = state;
+  const st = state.steer || {};
+  $("#mesh-meta").textContent =
+    `${state.name} · ${state.network} · ${state.source || "local"} · ${state.crypto?.aead || ""}`;
+  const hub = Object.assign({ isHub: true, name: "hub" }, state.hub || {});
+  const entries = [hub];
+  const exits = (state.peers || []).filter((p) => p.exit !== false);
+  const entryName = st.entry || hub.name;
+  const exitName = st.exit || (exits[0] && exits[0].name) || "";
+  const ent = entries.find((e) => e.name === entryName) || hub;
+  const ex = exits.find((e) => e.name === exitName) || exits[0];
+  const exIp = ex ? overlay(ex) : "";
+  $("#steer").innerHTML = `
+    <div class="path">${ent.flag || "🏳️"} ${ent.name}  →  ${ex ? (ex.flag || "🏳️") + " " + ex.name : "no exit"}</div>
+    <code>${exIp ? "ALL_PROXY=socks5h://" + exIp + ":1080" : ""}</code>
+  `;
+  const elE = $("#entry-list");
+  elE.innerHTML = "";
+  for (const h of entries) elE.appendChild(card(h, "entry", h.name === entryName));
+  const elX = $("#exit-list");
+  elX.innerHTML = "";
+  for (const h of exits) elX.appendChild(card(h, "exit", h.name === exitName));
 }
 
 async function load() {
@@ -112,4 +126,4 @@ $("#new-peer").addEventListener("submit", async (e) => {
 });
 
 load();
-setInterval(load, 15000);
+setInterval(load, 10000);

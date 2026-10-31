@@ -108,6 +108,15 @@ python3 mesh.py peer --out ./riptide-out --name kali --os linux
 
 `--remote` accepts a `~/.ssh/config` Host (`rt-vps`, …). Script: install `wireguard`, `/etc/wireguard/wg0.conf` mode 600, `ip_forward`, `ufw allow 51820/udp` when ufw is already active, `wg-quick@wg0`. It does not reset UFW, does not lock SSH to `wg0`, does not touch nginx or the C2 listener.
 
+Hub publishes the live host list on **loopback + overlay only** (`127.0.0.1:7668` and `10.66.0.1:7668`), never on WAN:
+
+```bash
+./deploy/roster.sh --remote root@YOUR.VPS.IP --out ./riptide-out --yes
+python3 mesh.py gui --out ./riptide-out --hub-ssh rt-vps
+```
+
+GUI: **entry** (hub you join on UDP 51820) next to **exit** (peer whose SOCKS you send traffic through). Country flags come from the peer WAN IP the hub sees in `wg show`. Click an exit → `ALL_PROXY=socks5h://10.66.0.X:1080`.
+
 On-box fallback (already root on the hub): `CONFIRM=YES templates/install-hub.sh /etc/wireguard/wg0.conf`.
 
 Hardening later: WAN `80/tcp 443/tcp 51820/udp`; SSH `:22` and operator WSS `:40056` only `in on wg0`. That is `templates/ufw-mesh.sh` (`CONFIRM=YES`) — run it after a peer on the overlay can still SSH.

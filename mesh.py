@@ -25,6 +25,78 @@ from lib.render import peer_conf, write_tree  # noqa: E402
 from lib.state import Mesh  # noqa: E402
 
 
+def _steer_path(out: Path) -> Path:
+    return Path(out) / "steer.json"
+
+
+def _load_steer(out: Path) -> dict:
+    p = _steer_path(out)
+    if not p.is_file():
+        return {"entry": "hub", "exit": ""}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"entry": "hub", "exit": ""}
+
+
+def _save_steer(out: Path, obj: dict) -> dict:
+    cur = _load_steer(out)
+    cur.update({k: v for k, v in obj.items() if k in ("entry", "exit") and v is not None})
+    _steer_path(out).write_text(json.dumps(cur) + "\n", encoding="utf-8")
+    return cur
+
+
+def _hub_hosts(ssh_host: str) -> dict | None:
+    if not ssh_host:
+        return None
+    p = subprocess.run(
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=8",
+            ssh_host,
+            "curl -sS --max-time 3 http://127.0.0.1:7668/api/hosts",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if p.returncode != 0 or not p.stdout.strip():
+        return None
+    try:
+        return json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def _apply_live(view: dict, hub_doc: dict | None) -> dict:
+    view.setdefault("hub", {})
+    view["hub"]["entry"] = True
+    view["hub"]["exit"] = False
+    for p in view.get("peers", []):
+        p.setdefault("entry", False)
+        p.setdefault("exit", True)
+        p.setdefault("socks", 1080)
+    if not hub_doc:
+        view["source"] = "local"
+        return view
+    hh = hub_doc.get("hub") or {}
+    for k in ("wan", "country", "country_name", "flag", "live"):
+        if hh.get(k) is not None:
+            view["hub"][k] = hh[k]
+    by_pub = {h.get("public"): h for h in hub_doc.get("hosts", [])}
+    for p in view.get("peers", []):
+        h = by_pub.get(p.get("public")) or {}
+        for k in ("wan", "country", "country_name", "flag", "live", "handshake", "socks"):
+            if k in h and h[k] is not None:
+                p[k] = h[k]
+        p["exit"] = True
+    view["source"] = "hub"
+    return view
+
+
 def _die(msg: str, code: int = 2) -> None:
     print(f"[-] {msg}", file=sys.stderr)
     raise SystemExit(code)
@@ -175,6 +247,7 @@ def cmd_gui(args: argparse.Namespace) -> None:
         _die("GUI binds loopback only (127.0.0.1 / ::1)")
     port = int(args.port)
     gui_dir = ROOT / "gui"
+    hub_ssh = getattr(args, "hub_ssh", "") or ""
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "RiptideGUI/1"
@@ -227,6 +300,8 @@ def cmd_gui(args: argparse.Namespace) -> None:
                 for p in view["peers"]:
                     if p["public"] in live:
                         p["handshake"] = live[p["public"]]
+                view = _apply_live(view, _hub_hosts(hub_ssh))
+                view["steer"] = _load_steer(m.out)
                 self._json(200, view)
                 return
             if u.path.startswith("/api/connect/"):
@@ -279,10 +354,18 @@ def cmd_gui(args: argparse.Namespace) -> None:
                 write_tree(mm.out, mm.data)
                 self._json(200, {"ok": True, "name": p["name"]})
                 return
+            if u.path == "/api/steer":
+                st = _save_steer(
+                    m.out,
+                    {"entry": obj.get("entry"), "exit": obj.get("exit")},
+                )
+                self._json(200, {"ok": True, "steer": st})
+                return
             self._json(404, {"error": "nope"})
 
     httpd = ThreadingHTTPServer((host, port), Handler)
-    _ok(f"GUI http://{host}:{port}  (loopback, mesh {m.out})")
+    extra = f"  hub-ssh={hub_ssh}" if hub_ssh else ""
+    _ok(f"GUI http://{host}:{port}  (loopback, mesh {m.out}){extra}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -331,6 +414,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out", default="./riptide-out")
     s.add_argument("--bind", default="127.0.0.1")
     s.add_argument("--port", type=int, default=7667)
+    s.add_argument("--hub-ssh", default="", help="SSH host that serves http://127.0.0.1:7668/api/hosts")
     s.set_defaults(fn=cmd_gui)
 
     s = sub.add_parser("selftest", help="key math vs wg(8) if present")

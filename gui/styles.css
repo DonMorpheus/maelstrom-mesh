@@ -26,13 +26,30 @@ header { display: flex; gap: 22px; align-items: center; margin-bottom: 28px; }
 h1 { margin: 0; letter-spacing: 0.28em; color: var(--honey); font-weight: 600; }
 .kicker { margin: 0; color: var(--mint); font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; }
 .sub { margin: 6px 0 0; color: var(--mute); font-size: 13px; }
-.entry {
-  border: 1px solid var(--line);
+.steer {
+  border: 1px solid var(--mint);
   background: var(--card);
   padding: 16px 18px;
+  margin-bottom: 24px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.steer .path { font-size: 18px; color: var(--honey); }
+.steer code { color: var(--mint); }
+.cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
   margin-bottom: 28px;
 }
-.entry code { color: var(--mint); }
+@media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+.hint { color: var(--mute); font-size: 12px; margin: 0 0 12px; }
+.stack { display: flex; flex-direction: column; gap: 12px; }
+.card.selected { border-color: var(--honey); box-shadow: 0 0 18px rgba(232, 184, 109, 0.2); }
+.flag { font-size: 28px; line-height: 1; }
+.cc { color: var(--mint); letter-spacing: 0.16em; }
 .toolbar { display: flex; justify-content: space-between; align-items: end; gap: 16px; flex-wrap: wrap; }
 h2 { margin: 0 0 10px; font-size: 13px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--honey); }
 form { display: flex; gap: 8px; }

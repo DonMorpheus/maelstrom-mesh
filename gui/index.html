@@ -17,10 +17,23 @@
       </div>
     </header>
 
-    <section class="entry" id="entry"></section>
+    <section class="steer" id="steer">picking entry / exit…</section>
+
+    <section class="cols">
+      <div>
+        <h2>entry</h2>
+        <p class="hint">where you join the overlay (hub WAN :51820)</p>
+        <div class="stack" id="entry-list"></div>
+      </div>
+      <div>
+        <h2>exit</h2>
+        <p class="hint">where traffic leaves — SOCKS on that host</p>
+        <div class="stack" id="exit-list"></div>
+      </div>
+    </section>
 
     <section class="toolbar">
-      <h2>nodes</h2>
+      <h2>enroll</h2>
       <form id="new-peer">
         <input name="name" placeholder="name" required autocomplete="off">
         <select name="os">
@@ -31,13 +44,6 @@
         </select>
         <button type="submit">enroll</button>
       </form>
-    </section>
-
-    <section class="grid" id="nodes"></section>
-
-    <section class="exit disabled">
-      <h2>exit list</h2>
-      <p>clear / tor — disabled. overlay stays 10.66.0.0/24.</p>
     </section>
   </div>
   <script src="/app.js"></script>
