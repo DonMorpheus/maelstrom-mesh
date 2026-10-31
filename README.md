@@ -94,11 +94,23 @@ Two modes, pick one per host:
 - **session** — run the agent from the implant process / a child. Reboot drops the overlay.
 - **persist** — BOF + SCM. Overlay comes back after reboot. File on disk is the cost of that.
 
-## Hub firewall (later)
+## Deploy hub to a VPS
 
-WAN: `80/tcp`, `443/tcp`, `51820/udp`. SSH `:22` and operator WSS `:40056` only `in on wg0`. Template `templates/ufw-mesh.sh` refuses to run unless `CONFIRM=YES`. It does not `ufw --force enable`.
+Same machine can keep HTTPS C2 on `:443`. Mesh hub is extra UDP `:51820`.
 
-Do not run `install-hub.sh` against a production VPS until you mean to.
+```bash
+python3 mesh.py init --name ops --endpoint YOUR.VPS.IP --out ./riptide-out
+python3 mesh.py peer --out ./riptide-out --name kali --os linux
+./deploy/hub.sh --remote root@YOUR.VPS.IP --out ./riptide-out          # plan
+./deploy/hub.sh --remote root@YOUR.VPS.IP --out ./riptide-out --yes    # install
+./agent/riptide-agent --config riptide-out/peers/kali.conf
+```
+
+`--remote` accepts a `~/.ssh/config` Host (`rt-vps`, …). Script: install `wireguard`, `/etc/wireguard/wg0.conf` mode 600, `ip_forward`, `ufw allow 51820/udp` when ufw is already active, `wg-quick@wg0`. It does not reset UFW, does not lock SSH to `wg0`, does not touch nginx or the C2 listener.
+
+On-box fallback (already root on the hub): `CONFIRM=YES templates/install-hub.sh /etc/wireguard/wg0.conf`.
+
+Hardening later: WAN `80/tcp 443/tcp 51820/udp`; SSH `:22` and operator WSS `:40056` only `in on wg0`. That is `templates/ufw-mesh.sh` (`CONFIRM=YES`) — run it after a peer on the overlay can still SSH.
 
 ## License
 
