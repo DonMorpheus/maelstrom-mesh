@@ -41,6 +41,7 @@ func hubRotate(dev *device.Device, c *cfg) {
 	eps := splitComma(c.Riptide.Hubs)
 	primary := c.Peers[0]
 	idx := 0
+	extraIdx := map[string]int{}
 	promoted := ""
 	t := time.NewTicker(20 * time.Second)
 	defer t.Stop()
@@ -58,6 +59,23 @@ func hubRotate(dev *device.Device, c *cfg) {
 			if err == nil {
 				_ = dev.IpcSet(fmt.Sprintf("public_key=%s\nendpoint=%s\n", primary.PublicKey, ep))
 				log.Printf("hub rotate endpoint %s", ep)
+			}
+		}
+		for overlay, list := range c.Riptide.HubEps {
+			heps := splitComma(list)
+			if len(heps) < 2 {
+				continue
+			}
+			p := peerByOverlay(c, overlay)
+			if p == nil || !stale(hs[p.PublicKey], now) {
+				continue
+			}
+			i := (extraIdx[overlay] + 1) % len(heps)
+			extraIdx[overlay] = i
+			ep, err := resolveEndpoint(heps[i])
+			if err == nil {
+				_ = dev.IpcSet(fmt.Sprintf("public_key=%s\nendpoint=%s\n", p.PublicKey, ep))
+				log.Printf("hub rotate extra %s -> %s", overlay, ep)
 			}
 		}
 		if c.Riptide.Failover == "" {

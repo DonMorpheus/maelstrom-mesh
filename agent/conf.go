@@ -39,8 +39,9 @@ type extras struct {
 	Allow   string
 	Control  string
 	Exit     string
-	Hubs     string // comma host:port rotation for primary hub
-	Failover string // extra hub overlay IPs, comma
+	Hubs     string            // comma host:port rotation for primary hub
+	Failover string            // extra hub overlay IPs, comma
+	HubEps   map[string]string // overlay IP -> extra hub endpoints
 	Tor      bool
 	DNS      string
 }
@@ -69,7 +70,7 @@ func loadConf(path string) (*cfg, error) {
 	}
 	defer f.Close()
 
-	c := &cfg{}
+	c := &cfg{Riptide: extras{HubEps: map[string]string{}}}
 	section := ""
 	var cur *peer
 	sc := bufio.NewScanner(f)
@@ -194,6 +195,14 @@ func loadConf(path string) (*cfg, error) {
 				c.Riptide.Tor = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 			case "dns":
 				c.Riptide.DNS = v
+			default:
+				lk := strings.ToLower(k)
+				if strings.HasPrefix(lk, "hubs.") {
+					if c.Riptide.HubEps == nil {
+						c.Riptide.HubEps = map[string]string{}
+					}
+					c.Riptide.HubEps[strings.TrimPrefix(lk, "hubs.")] = v
+				}
 			}
 		}
 	}

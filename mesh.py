@@ -195,7 +195,9 @@ def cmd_hub(args: argparse.Namespace) -> None:
     _ok(f"HUB {h['name']}  {h['address']}  listen {h.get('listen_port')}  endpoints={h.get('endpoints')}")
     _ok(f"conf {conf}")
     _ok("pack + BOF: riptide-hub C:\\Users\\Public\\riptide-agent.exe C:\\Users\\Public\\peer.conf")
-    _ok("inbound UDP on that host (LAN/WAN) must reach ListenPort")
+    _ok("inbound UDP on that host (LAN/WAN) must reach ListenPort — BOF opens Windows firewall")
+    _ok("then: python3 mesh.py sync --out %s --remote rt-vps --yes" % m.out)
+    _ok("re-pack other peers (extra [Peer]) and restart their riptide-agent")
 
 
 def cmd_endpoint(args: argparse.Namespace) -> None:
@@ -222,6 +224,20 @@ def cmd_c2(args: argparse.Namespace) -> None:
     write_tree(m.out, m.data)
     _ok(f"c2 {c2['host']} via {c2['via']}")
     _ok("re-pack peers / restart riptide-agent so [Riptide] C2 lands")
+
+
+def cmd_sync(args: argparse.Namespace) -> None:
+    m = _mesh(args)
+    write_tree(m.out, m.data)
+    script = ROOT / "deploy" / "sync.sh"
+    if not script.is_file():
+        _die(f"missing {script}")
+    cmd = ["bash", str(script), "--remote", args.remote, "--out", str(m.out)]
+    if args.yes:
+        cmd.append("--yes")
+    r = subprocess.run(cmd, check=False)
+    if r.returncode != 0:
+        raise SystemExit(r.returncode)
 
 
 def cmd_revoke(args: argparse.Namespace) -> None:
@@ -595,6 +611,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out", default="./riptide-out")
     s.add_argument("--name", required=True)
     s.set_defaults(fn=cmd_revoke)
+
+    s = sub.add_parser("sync", help="wg syncconf extra peers onto VPS hub (no bounce)")
+    s.add_argument("--out", default="./riptide-out")
+    s.add_argument("--remote", required=True, help="SSH host, e.g. rt-vps")
+    s.add_argument("--yes", action="store_true")
+    s.set_defaults(fn=cmd_sync)
 
     s = sub.add_parser("status", help="roster + optional wg dump")
     s.add_argument("--out", default="./riptide-out")

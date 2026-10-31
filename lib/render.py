@@ -75,6 +75,7 @@ def hub_host_conf(data: dict[str, Any], hub: dict[str, Any]) -> str:
         f"PersistentKeepalive = {KEEPALIVE}",
         "",
     ]
+    extra_eps: list[tuple[str, str]] = []
     for p in data.get("peers") or []:
         if p["name"] == hub["name"]:
             continue
@@ -92,6 +93,7 @@ def hub_host_conf(data: dict[str, Any], hub: dict[str, Any]) -> str:
         if p.get("role") == "hub" and (p.get("endpoints") or []):
             block.append(f"Endpoint = {p['endpoints'][0]}")
             block.append(f"PersistentKeepalive = {KEEPALIVE}")
+            extra_eps.append((p["address"].split("/")[0], ",".join(p["endpoints"])))
         block.append("")
         lines += block
     c2 = data.get("c2") or {}
@@ -107,6 +109,8 @@ def hub_host_conf(data: dict[str, Any], hub: dict[str, Any]) -> str:
         f"Allow = {allow}",
         f"Hubs = {','.join(e for e in eps if e)}",
     ]
+    for hip, s in extra_eps:
+        lines.append(f"Hubs.{hip} = {s}")
     if fail:
         lines.append(f"Failover = {fail}")
     if c2.get("host"):
@@ -146,12 +150,13 @@ def peer_conf(data: dict[str, Any], peer: dict[str, Any]) -> str:
         f"PersistentKeepalive = {KEEPALIVE}",
         "",
     ]
+    extra_eps: list[tuple[str, str]] = []
     for h in extra_hubs(data):
         psk = (peer.get("hub_psk") or {}).get(h["name"]) or (h.get("spoke_psk") or {}).get(peer["name"])
         if not psk:
             continue
         hip = h["address"].split("/")[0]
-        heps = h.get("endpoints") or []
+        heps = [e for e in (h.get("endpoints") or []) if e]
         block = [
             f"# extra hub {h['name']}",
             "[Peer]",
@@ -162,6 +167,7 @@ def peer_conf(data: dict[str, Any], peer: dict[str, Any]) -> str:
         if heps:
             block.append(f"Endpoint = {heps[0]}")
             block.append(f"PersistentKeepalive = {KEEPALIVE}")
+            extra_eps.append((hip, ",".join(heps)))
         block.append("")
         lines += block
     lines += [
@@ -175,6 +181,8 @@ def peer_conf(data: dict[str, Any], peer: dict[str, Any]) -> str:
     ]
     if eps:
         lines.append(f"Hubs = {','.join(eps)}")
+    for hip, s in extra_eps:
+        lines.append(f"Hubs.{hip} = {s}")
     fail = ",".join(h["address"].split("/")[0] for h in extra_hubs(data))
     if fail:
         lines.append(f"Failover = {fail}")
