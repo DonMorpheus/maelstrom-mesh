@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Riptide</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <img src="/logo.jpg" alt="Riptide" class="logo">
+      <div>
+        <p class="kicker">ops overlay</p>
+        <h1>RIPTIDE</h1>
+        <p class="sub" id="mesh-meta">loading…</p>
+      </div>
+    </header>
+
+    <section class="entry" id="entry"></section>
+
+    <section class="toolbar">
+      <h2>nodes</h2>
+      <form id="new-peer">
+        <input name="name" placeholder="name" required autocomplete="off">
+        <select name="os">
+          <option value="linux">linux</option>
+          <option value="windows">windows</option>
+          <option value="android">android</option>
+          <option value="darwin">darwin</option>
+        </select>
+        <button type="submit">enroll</button>
+      </form>
+    </section>
+
+    <section class="grid" id="nodes"></section>
+
+    <section class="exit disabled">
+      <h2>exit list</h2>
+      <p>clear / tor — disabled. overlay stays 10.66.0.0/24.</p>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

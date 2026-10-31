@@ -1,0 +1,18 @@
+[Unit]
+Description=Riptide overlay agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/riptide-agent --config /etc/riptide/peer.conf
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/etc/riptide/peer.conf
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
