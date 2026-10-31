@@ -37,8 +37,12 @@ type extras struct {
 	Routes  string
 	Shields bool
 	Allow   string
-	Control string
-	Exit    string
+	Control  string
+	Exit     string
+	Hubs     string // comma host:port rotation for primary hub
+	Failover string // extra hub overlay IPs, comma
+	Tor      bool
+	DNS      string
 }
 
 type cfg struct {
@@ -182,6 +186,14 @@ func loadConf(path string) (*cfg, error) {
 				c.Riptide.Control = v
 			case "exit":
 				c.Riptide.Exit = v
+			case "hubs":
+				c.Riptide.Hubs = v
+			case "failover":
+				c.Riptide.Failover = v
+			case "tor":
+				c.Riptide.Tor = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+			case "dns":
+				c.Riptide.DNS = v
 			}
 		}
 	}

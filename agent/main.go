@@ -53,9 +53,15 @@ func runAgent(cfgPath string, ov extraFlags) {
 		c.Riptide.C2Via = ov.c2via
 	}
 
+	dns := []netip.Addr{netip.MustParseAddr("10.66.0.1"), netip.MustParseAddr("1.1.1.1")}
+	if c.Riptide.DNS != "" {
+		if a, err := netip.ParseAddr(c.Riptide.DNS); err == nil {
+			dns = []netip.Addr{a, netip.MustParseAddr("1.1.1.1")}
+		}
+	}
 	tun, tnet, err := netstack.CreateNetTUN(
 		[]netip.Addr{c.Iface.Address},
-		[]netip.Addr{netip.MustParseAddr("1.1.1.1")},
+		dns,
 		1420,
 	)
 	if err != nil {
@@ -103,6 +109,8 @@ func runAgent(cfgPath string, ov extraFlags) {
 		c2Via:   c2via,
 		allow:   allow,
 		shields: c.Riptide.Shields,
+		tor:     c.Riptide.Tor,
+		dns:     c.Riptide.DNS,
 	}
 	if c.Riptide.Exit != "" {
 		e.setExit(c.Riptide.Exit)
@@ -113,39 +121,41 @@ func runAgent(cfgPath string, ov extraFlags) {
 	}
 
 	log.Printf("%s overlay=%s socks=:1080 (userspace, no WinTUN)", role, c.Iface.Address)
-
-	if !c.isHub() {
-		if err := serveConnect(tnet, "127.0.0.1:7668", "10.66.0.1:7668"); err != nil {
-			log.Printf("connect gui 127.0.0.1:7668: %v (use SSH -L if you are the admin box)", err)
-		} else {
-			log.Printf("connect http://127.0.0.1:7668/ -> 10.66.0.1:7668")
-		}
-		if err := serveHTTPHost(e, httpBind); err != nil {
-			log.Printf("http %s: %v", httpBind, err)
-		}
-		if err := serveHTTPOverlay(e, tnet, 8080); err != nil {
-			log.Printf("http overlay :8080: %v", err)
-		} else {
-			log.Printf("http overlay :8080  (other mesh peers as C2 redirector)")
-		}
-		if err := serveSOCKSHost(e, socksBind); err != nil {
-			log.Printf("socks %s: %v", socksBind, err)
-		} else if socksBind != "off" {
-			log.Printf("socks %s  (operator / GUI exit)", socksBind)
-		}
-		if err := serveControl(e, ctrl, httpBind, socksBind, splitComma(c.Riptide.Routes)); err != nil {
-			log.Printf("control %s: %v", ctrl, err)
-		} else if ctrl != "off" {
-			log.Printf("control %s", ctrl)
-		}
-		servePorts(tnet, parseServe(c.Riptide.Serve))
-		if len(e.c2) > 0 {
-			log.Printf("c2-via %s  hosts=%v", e.c2Via, e.c2)
-		}
-		if e.shields {
-			log.Printf("shields on  allow=%v", keys(allow))
-		}
+	if c.Riptide.Tor {
+		log.Printf("tor-exit 127.0.0.1:9050")
 	}
+
+	if err := serveConnect(tnet, "127.0.0.1:7668", "10.66.0.1:7668"); err != nil {
+		log.Printf("connect gui 127.0.0.1:7668: %v (use SSH -L if you are the admin box)", err)
+	} else {
+		log.Printf("connect http://127.0.0.1:7668/ -> 10.66.0.1:7668")
+	}
+	if err := serveHTTPHost(e, httpBind); err != nil {
+		log.Printf("http %s: %v", httpBind, err)
+	}
+	if err := serveHTTPOverlay(e, tnet, 8080); err != nil {
+		log.Printf("http overlay :8080: %v", err)
+	} else {
+		log.Printf("http overlay :8080  (other mesh peers as C2 redirector)")
+	}
+	if err := serveSOCKSHost(e, socksBind); err != nil {
+		log.Printf("socks %s: %v", socksBind, err)
+	} else if socksBind != "off" {
+		log.Printf("socks %s  (operator / GUI exit)", socksBind)
+	}
+	if err := serveControl(e, ctrl, httpBind, socksBind, splitComma(c.Riptide.Routes)); err != nil {
+		log.Printf("control %s: %v", ctrl, err)
+	} else if ctrl != "off" {
+		log.Printf("control %s", ctrl)
+	}
+	servePorts(tnet, parseServe(c.Riptide.Serve))
+	if len(e.c2) > 0 {
+		log.Printf("c2-via %s  hosts=%v", e.c2Via, e.c2)
+	}
+	if e.shields {
+		log.Printf("shields on  allow=%v", keys(allow))
+	}
+	go hubRotate(dev, c)
 
 	go func() {
 		t := time.NewTicker(30 * time.Second)

@@ -39,7 +39,19 @@ class Mesh:
         blob = self.state_path.read_bytes()
         raw = open_box(blob, self._load_key())
         self.data = json.loads(raw.decode("utf-8"))
+        self._migrate()
         return self.data
+
+    def _migrate(self) -> None:
+        if not self.data.get("endpoints"):
+            ep = self.data.get("endpoint")
+            self.data["endpoints"] = [ep] if ep else []
+        for p in self.data.get("peers") or []:
+            p.setdefault("role", "peer")
+            p.setdefault("hub_psk", {})
+            p.setdefault("spoke_psk", {})
+            p.setdefault("endpoints", [])
+            p.setdefault("tor", False)
 
     def save(self) -> None:
         self.out.mkdir(parents=True, exist_ok=True)
@@ -74,6 +86,7 @@ class Mesh:
             "network": NET,
             "listen_port": listen_port,
             "endpoint": f"{host}:{port}",
+            "endpoints": [f"{host}:{port}"],
             "crypto": {
                 "tunnel": "wireguard-noise-ik",
                 "aead": "chacha20-poly1305",
@@ -123,9 +136,20 @@ class Mesh:
             "created": utcnow(),
             "mode": "persist" if os_name in ("windows", "linux") else "session",
             "tag": "victim",
+            "role": "peer",
             "routes": [],
             "serve": "",
+            "tor": False,
+            "hub_psk": {},
+            "spoke_psk": {},
+            "endpoints": [],
         }
+        for h in self.data["peers"]:
+            if h.get("role") != "hub":
+                continue
+            sk = gen_psk()
+            h.setdefault("spoke_psk", {})[name] = sk
+            peer.setdefault("hub_psk", {})[h["name"]] = sk
         self.data["peers"].append(peer)
         self.save()
         return peer
@@ -138,6 +162,8 @@ class Mesh:
             "routes": list,
             "serve": str,
             "os": str,
+            "tor": bool,
+            "listen_port": int,
         }
         for k, v in fields.items():
             if v is None or k not in allowed:
@@ -153,9 +179,78 @@ class Mesh:
             if k == "routes":
                 if isinstance(v, str):
                     v = [x.strip() for x in v.split(",") if x.strip()]
+            if k == "tor":
+                v = bool(v) if not isinstance(v, str) else v.lower() in ("1", "true", "yes")
             p[k] = v
         self.save()
         return p
+
+    def add_hub(
+        self,
+        name: str,
+        os_name: str,
+        listen_port: int = LISTEN_PORT,
+        endpoints: list[str] | None = None,
+    ) -> dict[str, Any]:
+        name = name.strip().lower()
+        if not name or name in ("hub", "out"):
+            raise ValueError("bad hub name")
+        if any(p["name"] == name for p in self.data["peers"]):
+            raise ValueError(f"name taken: {name}")
+        priv, pub = gen_keypair()
+        ip = self.next_ip()
+        spoke_psk: dict[str, str] = {}
+        for other in self.data["peers"]:
+            sk = gen_psk()
+            spoke_psk[other["name"]] = sk
+            other.setdefault("hub_psk", {})[name] = sk
+        peer = {
+            "name": name,
+            "os": os_name,
+            "address": f"{ip}/32",
+            "private": priv,
+            "public": pub,
+            "psk": gen_psk(),
+            "created": utcnow(),
+            "mode": "persist",
+            "tag": "ops",
+            "role": "hub",
+            "listen_port": int(listen_port),
+            "endpoints": list(endpoints or []),
+            "spoke_psk": spoke_psk,
+            "hub_psk": {},
+            "routes": [],
+            "serve": "",
+            "tor": False,
+        }
+        self.data["peers"].append(peer)
+        self.save()
+        return peer
+
+    def add_endpoint(self, addr: str, name: str = "") -> list[str]:
+        addr = addr.strip()
+        if not addr:
+            raise ValueError("empty endpoint")
+        if ":" not in addr:
+            addr = f"{addr}:{self.data.get('listen_port', LISTEN_PORT)}"
+        if not name or name == "hub":
+            eps = list(self.data.get("endpoints") or [self.data.get("endpoint")])
+            if addr not in eps:
+                eps.append(addr)
+            self.data["endpoints"] = [e for e in eps if e]
+            if not self.data.get("endpoint"):
+                self.data["endpoint"] = addr
+            self.save()
+            return self.data["endpoints"]
+        p = self.peer(name)
+        if p.get("role") != "hub":
+            raise ValueError(f"{name} is not a hub — mesh.py hub first")
+        eps = list(p.get("endpoints") or [])
+        if addr not in eps:
+            eps.append(addr)
+        p["endpoints"] = eps
+        self.save()
+        return eps
 
     def set_c2(self, host: str, via: str = "10.66.0.1:443") -> dict[str, str]:
         host = host.strip()
@@ -201,6 +296,7 @@ class Mesh:
             "name": d["name"],
             "network": d["network"],
             "endpoint": d["endpoint"],
+            "endpoints": d.get("endpoints") or [d.get("endpoint")],
             "listen_port": d["listen_port"],
             "crypto": d.get("crypto", {}),
             "c2": d.get("c2") or {},
@@ -223,6 +319,9 @@ class Mesh:
                     "tag": p.get("tag", "victim"),
                     "routes": p.get("routes") or [],
                     "serve": p.get("serve") or "",
+                    "role": p.get("role", "peer"),
+                    "tor": bool(p.get("tor")),
+                    "endpoints": p.get("endpoints") or [],
                     "fqdn": f"{p['name']}.{d.get('domain', 'rt')}",
                     "handshake": p.get("handshake", "unknown"),
                 }

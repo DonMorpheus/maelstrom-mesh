@@ -93,6 +93,7 @@ def gui_state(doc: dict, role: str = "operator") -> dict:
         "endpoint": doc.get("endpoint"),
         "domain": doc.get("domain", "rt"),
         "c2": doc.get("c2") or {},
+        "endpoints": doc.get("endpoints") or [],
         "crypto": {
             "tunnel": "wireguard-noise-ik",
             "aead": "chacha20-poly1305",

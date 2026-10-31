@@ -11,11 +11,19 @@ import (
 )
 
 func socks5Dial(tnet *netstack.Net, proxy, dest string) (net.Conn, error) {
+	return socks5DialConn(func() (net.Conn, error) { return tnet.Dial("tcp", proxy) }, dest)
+}
+
+func socks5DialHost(proxy, dest string) (net.Conn, error) {
+	return socks5DialConn(func() (net.Conn, error) { return net.DialTimeout("tcp", proxy, 15*time.Second) }, dest)
+}
+
+func socks5DialConn(connect func() (net.Conn, error), dest string) (net.Conn, error) {
 	host, portS, err := net.SplitHostPort(dest)
 	if err != nil {
 		return nil, err
 	}
-	c, err := tnet.Dial("tcp", proxy)
+	c, err := connect()
 	if err != nil {
 		return nil, err
 	}

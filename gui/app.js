@@ -79,8 +79,11 @@ function card(h, kind, selected) {
     <div class="name">${h.name}</div>
     <div class="ip">${overlay(h)} <span class="fqdn">${fq}</span></div>
     <div class="badge">${kind} · ${h.os || ""} · ${on ? "up" : "down"} · ${tag} · ${mode}</div>
+    ${h.rtt_ms != null ? `<div class="badge">rtt ${h.rtt_ms}ms</div>` : ""}
+    ${h.tor ? `<div class="badge persist">tor</div>` : ""}
     ${routes ? `<div class="badge">${routes}</div>` : ""}
     ${wan ? `<div class="badge">${wan}</div>` : ""}
+    ${(h.endpoints && h.endpoints.length) ? `<div class="badge">${h.endpoints.length} ep</div>` : ""}
     <div class="row"></div>
   `;
   el.onclick = () => {
@@ -123,6 +126,16 @@ function card(h, kind, selected) {
       };
       row.append(b4);
     }
+    if (h.tor) {
+      const b5 = document.createElement("button");
+      b5.className = "ghost";
+      b5.textContent = "tor";
+      b5.onclick = (ev) => {
+        ev.stopPropagation();
+        copy(`ALL_PROXY=socks5h://127.0.0.1:1080  # last hop ${ip} → Tor 127.0.0.1:9050 on that host`);
+      };
+      row.append(b5);
+    }
   }
   return el;
 }
@@ -141,10 +154,12 @@ function render(state) {
   const me = state.me || {};
   $("#who").textContent = `${me.name || "?"} · ${me.role || "operator"}`;
   $("#enroll-box").hidden = me.role !== "admin";
+  const nEp = (state.endpoints || (state.hub && state.hub.endpoints) || []).length;
   $("#mesh-meta").textContent =
-    `${state.name} · ${state.network} · ${me.role || ""}`;
-  const hub = Object.assign({ isHub: true, name: "hub" }, state.hub || {});
-  const entries = [hub];
+    `${state.name} · ${state.network} · ${me.role || ""} · ${nEp} hub endpoint(s)`;
+  const hub = Object.assign({ isHub: true, name: "hub", entry: true }, state.hub || {});
+  const extra = (state.peers || []).filter((p) => p.entry || p.role === "hub");
+  const entries = [hub, ...extra];
   const exits = (state.peers || []).filter((p) => p.exit !== false);
   const entryName = st.entry || hub.name;
   const exitName = st.exit || (exits[0] && exits[0].name) || "";

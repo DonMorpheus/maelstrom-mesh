@@ -26,7 +26,10 @@ def public_roster(data: dict[str, Any]) -> dict[str, Any]:
                 "serve": p.get("serve") or "",
                 "fqdn": f"{p['name']}.{data.get('domain', 'rt')}",
                 "http": 8080,
-                "entry": False,
+                "role": p.get("role", "peer"),
+                "tor": bool(p.get("tor")),
+                "endpoints": p.get("endpoints") or [],
+                "entry": p.get("role") == "hub",
                 "exit": True,
                 "socks": 1080,
             }
@@ -35,6 +38,7 @@ def public_roster(data: dict[str, Any]) -> dict[str, Any]:
         "name": data["name"],
         "network": data["network"],
         "endpoint": data["endpoint"],
+        "endpoints": data.get("endpoints") or [data.get("endpoint")],
         "listen_port": data["listen_port"],
         "domain": data.get("domain", "rt"),
         "c2": data.get("c2") or {},
@@ -44,6 +48,7 @@ def public_roster(data: dict[str, Any]) -> dict[str, Any]:
             "overlay": hub["address"].split("/")[0],
             "public": hub["public"],
             "fqdn": f"hub.{data.get('domain', 'rt')}",
+            "endpoints": data.get("endpoints") or [data.get("endpoint")],
             "entry": True,
             "exit": False,
             "socks": 0,
@@ -106,7 +111,23 @@ def decorate(roster: dict[str, Any], dump: dict[str, dict[str, Any]], cache_dir=
         h["country"] = geo.get("country", "")
         h["country_name"] = geo.get("country_name", "")
         h["flag"] = geo.get("flag", "🏳️")
+        h["rtt_ms"] = tcp_rtt_ms(h.get("overlay") or "", 1080 if h.get("socks") else 0)
     return roster
+
+
+def tcp_rtt_ms(ip: str, port: int, timeout: float = 0.8) -> int | None:
+    if not ip or not port:
+        return None
+    import socket
+    import time
+
+    t0 = time.monotonic()
+    try:
+        s = socket.create_connection((ip, port), timeout)
+        s.close()
+        return int((time.monotonic() - t0) * 1000)
+    except OSError:
+        return None
 
 
 def as_json(obj: dict[str, Any]) -> str:

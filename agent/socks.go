@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 
 	"golang.zx2c4.com/wireguard/tun/netstack"
@@ -113,7 +114,11 @@ func handleSOCKS(e *engine, c net.Conn, shield, overlayExit bool) {
 	var up net.Conn
 	var err error
 	if overlayExit {
-		up, err = net.DialTimeout("tcp", dst, 15*time.Second)
+		if e.tor || strings.HasSuffix(strings.ToLower(host), ".onion") {
+			up, err = socks5DialHost("127.0.0.1:9050", dst)
+		} else {
+			up, err = net.DialTimeout("tcp", dst, 15*time.Second)
+		}
 	} else {
 		up, err = e.dial(dst)
 	}

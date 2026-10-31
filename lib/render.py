@@ -41,12 +41,89 @@ def ops_overlays(data: dict[str, Any]) -> list[str]:
     return out
 
 
+def extra_hubs(data: dict[str, Any]) -> list[dict[str, Any]]:
+    return [p for p in data.get("peers") or [] if p.get("role") == "hub"]
+
+
+def conf_for(data: dict[str, Any], peer: dict[str, Any]) -> str:
+    if peer.get("role") == "hub":
+        return hub_host_conf(data, peer)
+    return peer_conf(data, peer)
+
+
+def hub_host_conf(data: dict[str, Any], hub: dict[str, Any]) -> str:
+    """Userspace hub on a host (BOF). Cryptokey-routes overlay peers. No TAP."""
+    primary = data["hub"]
+    listen = int(hub.get("listen_port") or data.get("listen_port") or 51820)
+    eps = data.get("endpoints") or [data.get("endpoint")]
+    ep0 = (eps or [data.get("endpoint")])[0]
+    tag = hub.get("tag") or "ops"
+    allow = ",".join(ops_overlays(data) + [primary["address"].split("/")[0]])
+    lines = [
+        f"# Riptide HUB {hub['name']} — ListenPort {listen}  (BOF / riptide-agent)",
+        "[Interface]",
+        f"PrivateKey = {hub['private']}",
+        f"Address = {hub['address']}",
+        f"ListenPort = {listen}",
+        "",
+        "# primary hub",
+        "[Peer]",
+        f"PublicKey = {primary['public']}",
+        f"PresharedKey = {hub['psk']}",
+        "AllowedIPs = 10.66.0.1/32",
+        f"Endpoint = {ep0}",
+        f"PersistentKeepalive = {KEEPALIVE}",
+        "",
+    ]
+    for p in data.get("peers") or []:
+        if p["name"] == hub["name"]:
+            continue
+        psk = (hub.get("spoke_psk") or {}).get(p["name"]) or (p.get("hub_psk") or {}).get(hub["name"])
+        if not psk:
+            continue
+        ip = p["address"].split("/")[0] + "/32"
+        block = [
+            f"# {p['name']} ({p.get('role') or p['os']})",
+            "[Peer]",
+            f"PublicKey = {p['public']}",
+            f"PresharedKey = {psk}",
+            f"AllowedIPs = {ip}",
+        ]
+        if p.get("role") == "hub" and (p.get("endpoints") or []):
+            block.append(f"Endpoint = {p['endpoints'][0]}")
+            block.append(f"PersistentKeepalive = {KEEPALIVE}")
+        block.append("")
+        lines += block
+    c2 = data.get("c2") or {}
+    fail = ",".join(x["address"].split("/")[0] for x in extra_hubs(data) if x["name"] != hub["name"])
+    lines += [
+        "[Riptide]",
+        "Tag = ops",
+        "Mode = persist",
+        "HTTP = 127.0.0.1:8080",
+        "SOCKS = 127.0.0.1:1080",
+        "Control = 127.0.0.1:7670",
+        "Shields = 0",
+        f"Allow = {allow}",
+        f"Hubs = {','.join(e for e in eps if e)}",
+    ]
+    if fail:
+        lines.append(f"Failover = {fail}")
+    if c2.get("host"):
+        lines.append(f"C2 = {c2['host']}")
+        lines.append(f"C2Via = {c2.get('via') or '10.66.0.1:443'}")
+    if hub.get("tor"):
+        lines.append("Tor = 1")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def peer_conf(data: dict[str, Any], peer: dict[str, Any]) -> str:
     hub = data["hub"]
     tag = peer.get("tag") or "victim"
     mode = peer.get("mode") or "persist"
     c2 = data.get("c2") or {}
-    allow = ",".join(ops_overlays(data))
+    allow = ",".join(ops_overlays(data) + [h["address"].split("/")[0] for h in extra_hubs(data)])
     routes = peer.get("routes") or []
     if isinstance(routes, str):
         routes_s = routes
@@ -54,6 +131,7 @@ def peer_conf(data: dict[str, Any], peer: dict[str, Any]) -> str:
         routes_s = ",".join(routes)
     serve = peer.get("serve") or ""
     shields = "1" if tag != "ops" else "0"
+    eps = [e for e in (data.get("endpoints") or [data.get("endpoint")]) if e]
     lines = [
         f"# Riptide peer {peer['name']} — overlay {peer['address']}",
         "[Interface]",
@@ -63,10 +141,30 @@ def peer_conf(data: dict[str, Any], peer: dict[str, Any]) -> str:
         "[Peer]",
         f"PublicKey = {hub['public']}",
         f"PresharedKey = {peer['psk']}",
-        f"Endpoint = {data['endpoint']}",
+        f"Endpoint = {eps[0] if eps else data['endpoint']}",
         "AllowedIPs = 10.66.0.0/24",
         f"PersistentKeepalive = {KEEPALIVE}",
         "",
+    ]
+    for h in extra_hubs(data):
+        psk = (peer.get("hub_psk") or {}).get(h["name"]) or (h.get("spoke_psk") or {}).get(peer["name"])
+        if not psk:
+            continue
+        hip = h["address"].split("/")[0]
+        heps = h.get("endpoints") or []
+        block = [
+            f"# extra hub {h['name']}",
+            "[Peer]",
+            f"PublicKey = {h['public']}",
+            f"PresharedKey = {psk}",
+            f"AllowedIPs = {hip}/32",
+        ]
+        if heps:
+            block.append(f"Endpoint = {heps[0]}")
+            block.append(f"PersistentKeepalive = {KEEPALIVE}")
+        block.append("")
+        lines += block
+    lines += [
         "[Riptide]",
         f"Tag = {tag}",
         f"Mode = {mode}",
@@ -75,6 +173,13 @@ def peer_conf(data: dict[str, Any], peer: dict[str, Any]) -> str:
         "Control = 127.0.0.1:7670",
         f"Shields = {shields}",
     ]
+    if eps:
+        lines.append(f"Hubs = {','.join(eps)}")
+    fail = ",".join(h["address"].split("/")[0] for h in extra_hubs(data))
+    if fail:
+        lines.append(f"Failover = {fail}")
+    if peer.get("tor"):
+        lines.append("Tor = 1")
     if allow:
         lines.append(f"Allow = {allow}")
     if c2.get("host"):
@@ -174,6 +279,10 @@ def write_tree(out: Path, data: dict[str, Any]) -> list[Path]:
     dump(hub_dir / "install-hub.sh", install_hub_sh(), 0o700)
     dump(hub_dir / "ufw-mesh.sh", ufw_mesh(int(data["listen_port"])), 0o700)
     dump(out / "riptide-agent.service", systemd_unit(), 0o644)
+    hubs_dir = out / "hubs"
+    hubs_dir.mkdir(parents=True, exist_ok=True)
     for p in data.get("peers", []):
-        dump(peers_dir / f"{p['name']}.conf", peer_conf(data, p))
+        dump(peers_dir / f"{p['name']}.conf", conf_for(data, p))
+        if p.get("role") == "hub":
+            dump(hubs_dir / f"{p['name']}.conf", conf_for(data, p))
     return written

@@ -20,6 +20,8 @@ type engine struct {
 	c2Via   string
 	allow   map[string]bool
 	shields bool
+	tor     bool
+	dns     string
 	exit    atomic.Value // string overlay IP, empty = none
 }
 
@@ -111,6 +113,20 @@ func (e *engine) overlayDial(addr string) (net.Conn, error) {
 	return e.tnet.Dial("tcp", addr)
 }
 
+func (e *engine) resolveHost(host string) string {
+	if net.ParseIP(host) != nil {
+		return host
+	}
+	if e.tnet == nil {
+		return host
+	}
+	addrs, err := e.tnet.LookupHost(host)
+	if err != nil || len(addrs) == 0 {
+		return host
+	}
+	return addrs[0]
+}
+
 func (e *engine) dial(dest string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(dest)
 	if err != nil {
@@ -119,8 +135,10 @@ func (e *engine) dial(dest string) (net.Conn, error) {
 	if e.isC2(dest) && e.c2Via != "" {
 		return e.overlayDial(e.c2Via)
 	}
+	host = e.resolveHost(host)
+	dest = net.JoinHostPort(host, port)
 	if overlayAddr(host) {
-		return e.overlayDial(net.JoinHostPort(host, port))
+		return e.overlayDial(dest)
 	}
 	if ex := e.getExit(); ex != "" && overlayAddr(ex) {
 		return socks5Dial(e.tnet, net.JoinHostPort(ex, "1080"), dest)
