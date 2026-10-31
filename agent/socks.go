@@ -10,7 +10,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
-func serveSOCKS(tnet *netstack.Net, port int) error {
+func serveSOCKSOverlay(e *engine, tnet *netstack.Net, port int) error {
 	ln, err := tnet.ListenTCP(&net.TCPAddr{Port: port})
 	if err != nil {
 		return err
@@ -21,14 +21,39 @@ func serveSOCKS(tnet *netstack.Net, port int) error {
 			if err != nil {
 				return
 			}
-			go handleSOCKS(c)
+			go handleSOCKS(e, c, true, true)
 		}
 	}()
 	return nil
 }
 
-func handleSOCKS(c net.Conn) {
+func serveSOCKSHost(e *engine, bind string) error {
+	if bind == "" || bind == "off" {
+		return nil
+	}
+	ln, err := net.Listen("tcp", bind)
+	if err != nil {
+		return err
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go handleSOCKS(e, c, false, false)
+		}
+	}()
+	return nil
+}
+
+// overlayExit: CONNECT dials the HOST stack (this machine is an exit node).
+// local operator SOCKS: CONNECT uses engine.dial (overlay / C2-via / chained exit).
+func handleSOCKS(e *engine, c net.Conn, shield, overlayExit bool) {
 	defer c.Close()
+	if shield && !e.srcOK(c) {
+		return
+	}
 	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
 	hdr := make([]byte, 2)
 	if _, err := io.ReadFull(c, hdr); err != nil || hdr[0] != 5 {
@@ -83,9 +108,15 @@ func handleSOCKS(c net.Conn) {
 	}
 	port := binary.BigEndian.Uint16(pb)
 	_ = c.SetDeadline(time.Time{})
-
 	dst := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	up, err := net.DialTimeout("tcp", dst, 15*time.Second)
+
+	var up net.Conn
+	var err error
+	if overlayExit {
+		up, err = net.DialTimeout("tcp", dst, 15*time.Second)
+	} else {
+		up, err = e.dial(dst)
+	}
 	if err != nil {
 		_, _ = c.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
@@ -94,15 +125,9 @@ func handleSOCKS(c net.Conn) {
 	if _, err := c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
 		return
 	}
-	errc := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(up, c); errc <- struct{}{} }()
-	go func() { _, _ = io.Copy(c, up); errc <- struct{}{} }()
-	<-errc
+	splice(c, up)
 }
 
-// Local Connect window: host browser → overlay hub rosterd.
-// Overlay :1080 stays an exit (CONNECT via the host stack). This listener
-// is the opposite direction — local operator → 10.66.0.1:7668.
 func serveConnect(tnet *netstack.Net, local, remote string) error {
 	ln, err := net.Listen("tcp", local)
 	if err != nil {
@@ -127,8 +152,5 @@ func proxyConnect(tnet *netstack.Net, c net.Conn, remote string) {
 		return
 	}
 	defer up.Close()
-	errc := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(up, c); errc <- struct{}{} }()
-	go func() { _, _ = io.Copy(c, up); errc <- struct{}{} }()
-	<-errc
+	splice(c, up)
 }

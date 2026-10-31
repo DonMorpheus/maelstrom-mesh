@@ -21,6 +21,7 @@ for p in (ROOT.parent, Path("/usr/local/lib/riptide")):
         sys.path.insert(0, s)
 
 from lib.auth import login as do_login, session  # noqa: E402
+from lib.dns import serve_dns  # noqa: E402
 from lib.roster import decorate, parse_wg_dump, wg_dump_cmd  # noqa: E402
 
 MIME = {
@@ -53,12 +54,35 @@ def filter_role(doc: dict, role: str) -> dict:
     return {**doc, "hub": hub, "hosts": hosts, "role": role}
 
 
-def gui_state(doc: dict) -> dict:
+def _gone(h: dict) -> bool:
+    if h.get("mode") != "session":
+        return False
+    if h.get("live") is True:
+        return False
+    hs = h.get("handshake") or 0
+    try:
+        hs_i = int(hs)
+    except (TypeError, ValueError):
+        return True
+    if hs_i <= 0:
+        return True
+    import time
+
+    if hs_i > 1e9:
+        return time.time() - hs_i > 180
+    return False
+
+
+def gui_state(doc: dict, role: str = "operator") -> dict:
     peers = []
     for h in doc.get("hosts") or []:
+        gone = _gone(h)
+        if role != "admin" and gone:
+            continue
         p = dict(h)
         p["address"] = h.get("overlay") or ""
         p["exit"] = True
+        p["ephemeral_gone"] = gone
         peers.append(p)
     hub = dict(doc.get("hub") or {})
     hub["entry"] = True
@@ -67,6 +91,8 @@ def gui_state(doc: dict) -> dict:
         "name": doc.get("name"),
         "network": doc.get("network"),
         "endpoint": doc.get("endpoint"),
+        "domain": doc.get("domain", "rt"),
+        "c2": doc.get("c2") or {},
         "crypto": {
             "tunnel": "wireguard-noise-ik",
             "aead": "chacha20-poly1305",
@@ -146,7 +172,7 @@ def serve(host: str, port: int, roster_path: Path, cache: Path, operators: Path,
                 if path == "/api/hosts":
                     self._json(200, doc)
                     return
-                st = gui_state(doc)
+                st = gui_state(doc, me["role"])
                 st["me"] = {"name": me["name"], "role": me["role"]}
                 self._json(200, st)
                 return
@@ -195,6 +221,7 @@ def main() -> None:
         print(json.dumps(build(roster_path, cache), indent=2))
         return
     binds = ["127.0.0.1"]
+    overlay = None
     try:
         doc = json.loads(roster_path.read_text(encoding="utf-8"))
         overlay = (doc.get("hub") or {}).get("overlay")
@@ -202,6 +229,33 @@ def main() -> None:
             binds.append(overlay)
     except Exception:
         pass
+
+    def dns_table() -> dict:
+        try:
+            doc = build(roster_path, cache)
+        except Exception:
+            return {}
+        domain = doc.get("domain") or "rt"
+        tab = {}
+        hub = doc.get("hub") or {}
+        ho = (hub.get("overlay") or "10.66.0.1").split("/")[0]
+        tab["hub"] = ho
+        tab[f"hub.{domain}"] = ho
+        for h in doc.get("hosts") or []:
+            name = h.get("name") or ""
+            ip = (h.get("overlay") or "").split("/")[0]
+            if not name or not ip:
+                continue
+            tab[name] = ip
+            tab[f"{name}.{domain}"] = ip
+        return tab
+
+    if overlay:
+        try:
+            serve_dns(overlay, dns_table)
+        except OSError as e:
+            print(f"[!] dns {overlay}:53: {e}")
+
     threads = []
     for h in binds:
         t = threading.Thread(

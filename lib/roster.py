@@ -13,13 +13,19 @@ def public_roster(data: dict[str, Any]) -> dict[str, Any]:
     hub = data["hub"]
     hosts = []
     for p in data.get("peers", []):
+        overlay = p["address"].split("/")[0]
         hosts.append(
             {
                 "name": p["name"],
                 "os": p["os"],
-                "overlay": p["address"].split("/")[0],
+                "overlay": overlay,
                 "public": p["public"],
                 "mode": p.get("mode", "persist"),
+                "tag": p.get("tag", "victim"),
+                "routes": p.get("routes") or [],
+                "serve": p.get("serve") or "",
+                "fqdn": f"{p['name']}.{data.get('domain', 'rt')}",
+                "http": 8080,
                 "entry": False,
                 "exit": True,
                 "socks": 1080,
@@ -30,11 +36,14 @@ def public_roster(data: dict[str, Any]) -> dict[str, Any]:
         "network": data["network"],
         "endpoint": data["endpoint"],
         "listen_port": data["listen_port"],
+        "domain": data.get("domain", "rt"),
+        "c2": data.get("c2") or {},
         "hub": {
             "name": hub["name"],
             "os": hub.get("os", "linux"),
             "overlay": hub["address"].split("/")[0],
             "public": hub["public"],
+            "fqdn": f"hub.{data.get('domain', 'rt')}",
             "entry": True,
             "exit": False,
             "socks": 0,

@@ -39,20 +39,26 @@ if [[ -f "$OUT/operators.json" ]]; then
   "${SSH[@]}" "$REMOTE" 'chmod 600 /etc/riptide/operators.json'
 fi
 "${SCP[@]}" "$ROOT/lib/__init__.py" "$ROOT/lib/geo.py" "$ROOT/lib/roster.py" "$ROOT/lib/auth.py" \
+  "$ROOT/lib/dns.py" \
   "$REMOTE:/usr/local/lib/riptide/lib/"
+"${SCP[@]}" "$ROOT/deploy/grants.sh" "$REMOTE:/usr/local/lib/riptide/grants.sh"
 "${SCP[@]}" "$ROOT/deploy/rosterd.py" "$REMOTE:/usr/local/lib/riptide/rosterd.py"
 "${SCP[@]}" "$ROOT/gui/index.html" "$ROOT/gui/app.js" "$ROOT/gui/styles.css" \
   "$REMOTE:/usr/local/share/riptide/gui/"
 "${SCP[@]}" "$ROOT/assets/logo.jpg" "$REMOTE:/usr/local/share/riptide/assets/"
 "${SCP[@]}" "$ROOT/persist/riptide-roster.service" \
   "$REMOTE:/etc/systemd/system/riptide-roster.service"
-"${SSH[@]}" "$REMOTE" 'chmod 755 /usr/local/lib/riptide/rosterd.py
+"${SSH[@]}" "$REMOTE" 'chmod 755 /usr/local/lib/riptide/rosterd.py /usr/local/lib/riptide/grants.sh
 systemctl daemon-reload
 systemctl enable --now riptide-roster
 systemctl restart riptide-roster
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
   ufw allow in on wg0 to any port 7668 proto tcp comment "riptide-connect" >/dev/null
+  ufw allow in on wg0 to any port 53 proto udp comment "riptide-dns" >/dev/null
+  ufw route allow in on wg0 out on wg0 comment "riptide-overlay" >/dev/null || true
 fi
+OPS=$(python3 -c "import json; d=json.load(open(\"/etc/riptide/roster.json\")); print(\" \".join(h.get(\"overlay\",\"\").split(\"/\")[0] for h in d.get(\"hosts\") or [] if h.get(\"tag\")==\"ops\"))")
+OPS="$OPS" bash /usr/local/lib/riptide/grants.sh
 sleep 1
 curl -sS -o /dev/null -w "gui:%{http_code}\n" http://127.0.0.1:7668/'
 echo "[+] roster live"

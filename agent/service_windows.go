@@ -14,7 +14,7 @@ func (s *riptideSvc) Execute(_ []string, r <-chan svc.ChangeRequest, changes cha
 	changes <- svc.Status{State: svc.StartPending}
 	done := make(chan struct{})
 	go func() {
-		runAgent(s.cfg)
+		runAgent(s.cfg, extraFlags{})
 		close(done)
 	}()
 	changes <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}

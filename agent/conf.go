@@ -26,9 +26,25 @@ type peer struct {
 	Keepalive  int
 }
 
+type extras struct {
+	Tag     string
+	Mode    string
+	HTTP    string
+	SOCKS   string
+	C2      string
+	C2Via   string
+	Serve   string
+	Routes  string
+	Shields bool
+	Allow   string
+	Control string
+	Exit    string
+}
+
 type cfg struct {
-	Iface iface
-	Peers []peer
+	Iface  iface
+	Peers  []peer
+	Riptide extras
 }
 
 func b64ToHex(s string) (string, error) {
@@ -68,6 +84,11 @@ func loadConf(path string) (*cfg, error) {
 			p := peer{}
 			c.Peers = append(c.Peers, p)
 			cur = &c.Peers[len(c.Peers)-1]
+			continue
+		}
+		if strings.EqualFold(line, "[Riptide]") {
+			section = "riptide"
+			cur = nil
 			continue
 		}
 		k, v, ok := strings.Cut(line, "=")
@@ -134,6 +155,33 @@ func loadConf(path string) (*cfg, error) {
 				if err == nil {
 					cur.Keepalive = n
 				}
+			}
+		case "riptide":
+			switch strings.ToLower(k) {
+			case "tag":
+				c.Riptide.Tag = v
+			case "mode":
+				c.Riptide.Mode = v
+			case "http":
+				c.Riptide.HTTP = v
+			case "socks":
+				c.Riptide.SOCKS = v
+			case "c2":
+				c.Riptide.C2 = v
+			case "c2via":
+				c.Riptide.C2Via = v
+			case "serve":
+				c.Riptide.Serve = v
+			case "routes":
+				c.Riptide.Routes = v
+			case "shields":
+				c.Riptide.Shields = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+			case "allow":
+				c.Riptide.Allow = v
+			case "control":
+				c.Riptide.Control = v
+			case "exit":
+				c.Riptide.Exit = v
 			}
 		}
 	}

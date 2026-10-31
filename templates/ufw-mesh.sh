@@ -14,5 +14,7 @@ ufw allow 51820/udp comment 'riptide-wg'
 ufw allow in on wg0 to any port 22 proto tcp comment 'ssh-overlay'
 ufw allow in on wg0 to any port 40056 proto tcp comment 'op-wss-overlay'
 ufw allow in on wg0 to any port 7668 proto tcp comment 'riptide-connect'
+ufw allow in on wg0 to any port 53 proto udp comment 'riptide-dns'
+ufw route allow in on wg0 out on wg0 comment 'riptide-overlay'
 echo "[+] rules queued. enable yourself: ufw enable"
 ufw status verbose

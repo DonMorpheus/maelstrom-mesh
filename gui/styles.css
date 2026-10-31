@@ -92,6 +92,7 @@ button.danger { background: transparent; color: #e07a6a; border: 1px solid #e07a
 .card.live { border-color: var(--mint); }
 .card .name { font-size: 18px; color: var(--honey); }
 .card .ip { color: var(--mint); }
+.fqdn { color: var(--mute); font-size: 12px; }
 .badge {
   font-size: 11px;
   letter-spacing: 0.14em;

@@ -122,10 +122,48 @@ class Mesh:
             "psk": gen_psk(),
             "created": utcnow(),
             "mode": "persist" if os_name in ("windows", "linux") else "session",
+            "tag": "victim",
+            "routes": [],
+            "serve": "",
         }
         self.data["peers"].append(peer)
         self.save()
         return peer
+
+    def set_peer(self, name: str, **fields: Any) -> dict[str, Any]:
+        p = self.peer(name)
+        allowed = {
+            "tag": str,
+            "mode": str,
+            "routes": list,
+            "serve": str,
+            "os": str,
+        }
+        for k, v in fields.items():
+            if v is None or k not in allowed:
+                continue
+            if k == "tag":
+                v = str(v).strip().lower()
+                if v not in ("ops", "victim"):
+                    raise ValueError("tag ops|victim")
+            if k == "mode":
+                v = str(v).strip().lower()
+                if v not in ("persist", "session"):
+                    raise ValueError("mode persist|session")
+            if k == "routes":
+                if isinstance(v, str):
+                    v = [x.strip() for x in v.split(",") if x.strip()]
+            p[k] = v
+        self.save()
+        return p
+
+    def set_c2(self, host: str, via: str = "10.66.0.1:443") -> dict[str, str]:
+        host = host.strip()
+        via = via.strip() or "10.66.0.1:443"
+        self.data["c2"] = {"host": host, "via": via}
+        self.data.setdefault("domain", "rt")
+        self.save()
+        return self.data["c2"]
 
     def revoke(self, name: str) -> dict[str, Any]:
         name = name.strip().lower()
@@ -165,11 +203,14 @@ class Mesh:
             "endpoint": d["endpoint"],
             "listen_port": d["listen_port"],
             "crypto": d.get("crypto", {}),
+            "c2": d.get("c2") or {},
+            "domain": d.get("domain", "rt"),
             "hub": {
                 "name": hub["name"],
                 "os": hub.get("os", "linux"),
                 "address": hub["address"],
                 "public": hub["public"],
+                "fqdn": f"hub.{d.get('domain', 'rt')}",
             },
             "peers": [
                 {
@@ -179,6 +220,10 @@ class Mesh:
                     "public": p["public"],
                     "created": p.get("created", ""),
                     "mode": p.get("mode", "session"),
+                    "tag": p.get("tag", "victim"),
+                    "routes": p.get("routes") or [],
+                    "serve": p.get("serve") or "",
+                    "fqdn": f"{p['name']}.{d.get('domain', 'rt')}",
                     "handshake": p.get("handshake", "unknown"),
                 }
                 for p in d["peers"]
