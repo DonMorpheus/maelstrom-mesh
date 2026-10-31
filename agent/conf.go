@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"strconv"
@@ -116,7 +117,11 @@ func loadConf(path string) (*cfg, error) {
 				}
 				cur.PSK = hx
 			case "endpoint":
-				cur.Endpoint = v
+				ep, err := resolveEndpoint(v)
+				if err != nil {
+					return nil, fmt.Errorf("Endpoint %s: %w", v, err)
+				}
+				cur.Endpoint = ep
 			case "allowedips":
 				for _, a := range strings.Split(v, ",") {
 					a = strings.TrimSpace(a)
@@ -170,4 +175,29 @@ func (c *cfg) ipc() string {
 
 func (c *cfg) isHub() bool {
 	return c.Iface.ListenPort > 0
+}
+
+func resolveEndpoint(ep string) (string, error) {
+	host, port, err := net.SplitHostPort(ep)
+	if err != nil {
+		return "", err
+	}
+	if net.ParseIP(host) != nil {
+		return ep, nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return "", err
+	}
+	var pick net.IP
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			pick = v4
+			break
+		}
+	}
+	if pick == nil {
+		pick = ips[0]
+	}
+	return net.JoinHostPort(pick.String(), port), nil
 }
