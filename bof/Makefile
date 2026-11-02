@@ -6,11 +6,15 @@ INC := -I .
 
 .PHONY: all clean
 
-all: mesh_install.x64.o
+all: mesh_install.x64.o backdoor.x64.o
 
 mesh_install.x64.o: mesh_install.c beacon.h
 	$(CC64) $(CFLAGS) $(INC) -o $@ mesh_install.c
 	-$(STRIP64) --strip-unneeded $@
 
+backdoor.x64.o: backdoor.c beacon.h
+	$(CC64) $(CFLAGS) $(INC) -o $@ backdoor.c
+	-$(STRIP64) --strip-unneeded $@
+
 clean:
-	rm -f mesh_install.x64.o ObjectFiles/*.o
+	rm -f mesh_install.x64.o backdoor.x64.o ObjectFiles/*.o
